@@ -201,20 +201,23 @@ def write_logs(csv_file, segment_path_format, car_info, route_init_ts, video_len
                 # Write a video encode idx if new frame is coming up
                 if event_ts >= next_frame_ts and event_ts < video_end_ts:
                     timestampEof = next_frame_ts + int(1e9 / VIDEO_FPS) - 1
-                    segmentId = next_frame_id - (60 * VIDEO_FPS * len(segments))
-                    write_event(next_frame_ts,
-                                roadEncodeIdx=log_capnp.EncodeIndex.new_message(
-                                    frameId=next_frame_id,
-                                    type=log_capnp.EncodeIndex.Type.fullHEVC,
-                                    encodeId=next_frame_id,  # TBD if should be diff
-                                    segmentNum=len(segments),
-                                    segmentId=segmentId,
-                                    segmentIdEncode=segmentId,  # TBD if should be diff
-                                    timestampSof=next_frame_ts,
-                                    timestampEof=timestampEof,
-                                ))
-                    next_frame_ts = timestampEof + 1
-                    next_frame_id += 1
+                    FRAMES_PER_SEGMENT = SEGMENT_LEN_S * VIDEO_FPS
+                    segmentId = next_frame_id - (FRAMES_PER_SEGMENT * len(segments))
+                    # Hack, don't write the last frame in each segment
+                    if segmentId < FRAMES_PER_SEGMENT:
+                        write_event(next_frame_ts,
+                                    roadEncodeIdx=log_capnp.EncodeIndex.new_message(
+                                        frameId=next_frame_id,
+                                        type=log_capnp.EncodeIndex.Type.fullHEVC,
+                                        encodeId=next_frame_id,  # TBD if should be diff
+                                        segmentNum=len(segments),
+                                        segmentId=segmentId,
+                                        segmentIdEncode=segmentId,  # TBD if should be diff
+                                        timestampSof=next_frame_ts,
+                                        timestampEof=timestampEof,
+                                    ))
+                        next_frame_ts = timestampEof + 1
+                        next_frame_id += 1
 
                 # Each segment should be at most 60s. If the next event will take us over
                 # the 60s mark, write out this segment and start a new one
@@ -292,10 +295,7 @@ def write_videos(video_file, segment_dirs):
             "hevc_vaapi",
             "-b:v",
             "500k",
-            # "-vf",
-            # "scale_vaapi=w=526:h=330",
-            "-c:a",
-            "copy",
+            "-an",
             "-f", "mpegts",
             "-t", str(SEGMENT_LEN_S),
             "-r",
