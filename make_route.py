@@ -204,7 +204,7 @@ def write_logs(csv_file, segment_path_format, car_info, route_init_ts, video_len
                     FRAMES_PER_SEGMENT = SEGMENT_LEN_S * VIDEO_FPS
                     segmentId = next_frame_id - (FRAMES_PER_SEGMENT * len(segments))
                     # Hack, don't write the last frame in each segment
-                    if segmentId < FRAMES_PER_SEGMENT:
+                    if 0 <= segmentId < FRAMES_PER_SEGMENT:
                         write_event(next_frame_ts,
                                     roadEncodeIdx=log_capnp.EncodeIndex.new_message(
                                         frameId=next_frame_id,
