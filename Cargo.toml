@@ -1,0 +1,20 @@
+[package]
+name = "make_route"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bzip2 = "0.4.4"
+capnp = "0.16.1"
+chrono = "0.4.24"
+csv = "1.2.1"
+ffmpeg = { git = "https://github.com/meh/rust-ffmpeg.git", branch = "master", version = "0.6.0" }
+itertools = "0.10.5"
+serde = { version = "1.0.160", features = ["derive", "alloc"] }
+serde_yaml = "0.9.21"
+
+[build-dependencies]
+capnpc = "0.16"
