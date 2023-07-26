@@ -4,7 +4,6 @@ use std::path::Path;
 use ffmpeg::{codec, decoder, encoder, format, frame, media, Dictionary, Packet, Rational};
 
 const TARGET_FPS: u32 = 20;
-const SEGMENT_SECS: i64 = 60;
 
 pub struct SegmentVideoEncoder {
     octx: format::context::Output,
@@ -16,7 +15,7 @@ pub struct SegmentVideoEncoder {
 }
 
 impl SegmentVideoEncoder {
-    pub(crate) fn new(path: &Path, source: &SourceVideo) -> Result<Self, Box<dyn Error>> {
+    pub fn new(path: &Path, source: &SourceVideo) -> Result<Self, Box<dyn Error>> {
         let mut octx = format::output(&path).unwrap();
 
         let mut ost = octx.add_stream()?;
@@ -61,7 +60,7 @@ impl SegmentVideoEncoder {
         })
     }
 
-    pub(crate) fn send_frame(&mut self, frame: &SourceFrame) -> Result<(), Box<dyn Error>> {
+    pub fn send_frame(&mut self, frame: &SourceFrame) -> Result<(), Box<dyn Error>> {
         //dbg!(self.frame_count);
         self.encoder.send_frame(&frame.frame)?;
         self.receive_packets()?;
@@ -83,7 +82,7 @@ impl SegmentVideoEncoder {
         Ok(())
     }
 
-    pub(crate) fn finish(mut self) {
+    pub fn finish(mut self) {
         self.encoder.send_eof().unwrap();
         self.receive_packets().unwrap();
         self.octx.write_trailer().unwrap();
@@ -178,95 +177,3 @@ impl<'a> Iterator for SourceFrameIterator<'a> {
         return receive_frames(&mut self.decoder);
     }
 }
-
-// impl RouteThumbs {
-//     /* This function is embarassingly messy, as it tries to do two things at once:
-
-//     - Transcode the video_file to 20fps segment videos of length SEGMENT_SECS
-//     - Build up the list of thumbnail images from every second of footage
-
-//     ... and there is no doubt an elegant way to do this with an iterator of decoded frames,
-//     but I'm not good enough at either Rust or libavcodec to make that work for now. So we get the
-//     messy imperative-ish C-by-any-other-language version...
-//      */
-//     pub fn new(video_file: &Path, route_dir_base: &str) -> Result<Self, Box<dyn Error>> {
-//         let mut ictx = format::input(&video_file)?;
-//         let input = ictx
-//             .streams()
-//             .best(media::Type::Video)
-//             .ok_or(ffmpeg::Error::StreamNotFound)?;
-//         let video_stream_index = input.index();
-
-//         let mut decoder = input.decoder()?.open()?.video()?;
-//         let timebase = input.time_base();
-//         dbg!(timebase);
-
-//         // Calculate the PTS interval at which to keep frames for TARGET_FPS
-//         let pts_per_out_frame =
-//             timebase.denominator() as i64 / timebase.numerator() as i64 / TARGET_FPS as i64;
-
-//         // Decoder state tracking
-//         let mut frame_index = 0;
-//         let mut next_pts = 0;
-
-//         // Return the path to the output video for segment 'num'
-//         let get_segment_video_path = |num: i64| -> PathBuf {
-//             let base = format!("{}-{:02}", route_dir_base, num);
-//             let mut result = PathBuf::from(base);
-//             std::fs::create_dir_all(&result).ok(); // TODO
-//             result.push("qcamera.ts");
-//             result
-//         };
-
-//         // Encoder state tracking, for each segment in the route
-//         let mut segment = 0;
-//         let mut segment_encode =
-//             SegmentVideoEncoder::new(&get_segment_video_path(segment), &decoder).unwrap();
-//         let time_per_segment = (SEGMENT_SECS as f64 / f64::from(timebase)).round() as i64;
-
-//         let mut receive_and_process_decoded_frames =
-//             |decoder: &mut ffmpeg::decoder::Video| -> Result<(), ffmpeg::Error> {
-//                 let mut frame = frame::Video::empty();
-//                 while decoder.receive_frame(&mut frame).is_ok() {
-//                     if let Some(pts) = frame.pts() {
-//                         if pts >= next_pts {
-//                             let timestamp = frame.timestamp();
-//                             if timestamp.unwrap_or(0) > time_per_segment * (segment + 1) {
-//                                 eprintln!("Finishing segment at frame_index {}", frame_index);
-//                                 // This segment is finished, start another one
-//                                 segment += 1;
-//                                 segment_encode.finish();
-
-//                                 segment_encode = SegmentVideoEncoder::new(
-//                                     &get_segment_video_path(segment),
-//                                     &decoder,
-//                                 )
-//                                 .unwrap();
-//                             }
-
-//                             frame.set_kind(picture::Type::None);
-//                             segment_encode.send_frame(&frame).ok(); // TODO!
-
-//                             next_pts += pts_per_out_frame;
-//                         }
-//                         frame_index += 1;
-//                     }
-//                 }
-//                 Ok(())
-//             };
-
-//         for res in ictx.packets() {
-//             let (stream, packet) = res.unwrap();
-//             if stream.index() == video_stream_index {
-//                 decoder.send_packet(&packet)?;
-//                 receive_and_process_decoded_frames(&mut decoder)?;
-//             }
-//         }
-//         decoder.send_eof()?;
-//         receive_and_process_decoded_frames(&mut decoder)?;
-
-//         segment_encode.finish();
-
-//         Ok(RouteThumbs {})
-//     }
-// }
