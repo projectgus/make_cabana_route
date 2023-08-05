@@ -5,6 +5,7 @@ use make_route::log_capnp::sentinel::SentinelType;
 use make_route::rlog::{read_can_messages, CANMessage, LogInput, RLogWriter};
 use make_route::video::{SegmentVideoEncoder, SourceVideo};
 use make_route::Nanos;
+use merging_iterator::MergeIter;
 use serde::Deserialize;
 use serde_yaml;
 use std::error::Error;
@@ -106,33 +107,28 @@ fn process_log(
     route_dir_base: &OsStr,
     can_ts_offs: Nanos,
 ) -> Result<(), Box<dyn Error>> {
-    // Merge the CAN messages and the Video frames into a vector of LogInputs that
-    // we can then sort.
-    //
-    // Note: once BinaryHeap::drain_sorted becomes stable, can maybe use BinaryHeap
-    // here.
-    //
-    // It's tempting to treat both iterators (CAN Messages and frames) as sorted and merge
-    // them, but actually the CAN message log may not be 100% sorted if it contains captures
-    // from >1 bus.
-    let mut inputs = Vec::from_iter(
-        read_can_messages(log_path, can_ts_offs)?
-            .into_iter()
-            .map(|m| LogInput::CAN(m)),
-    );
+    // Read CAN messages, and sort them by timestamp
+    // (not guaranteed from the CSV log, if there are CAN messages from >1 bus)
+    let can_inputs = read_can_messages(log_path, can_ts_offs)?
+        .into_iter()
+        .map(|m| LogInput::CAN(m))
+        .sorted();
 
     eprintln!("Opening video {video_path:?}...");
 
     let mut source_video = SourceVideo::new(&video_path)?;
 
-    inputs.extend(source_video.video_frames().map(|f| LogInput::Frame(f)));
+    let properties = source_video.properties();
+
+    let frame_inputs = source_video.video_frames().map(|f| LogInput::Frame(f));
 
     eprintln!("Preparing source data...");
 
-    // Sort the LogInputs and group them into segments
+    // Merge the CAN and Frame inputs, keeping them sorted as we read them
+    let inputs = MergeIter::new(can_inputs, frame_inputs);
+
+    // Sort the inputs and group them into segments
     let segments = inputs
-        .into_iter()
-        .sorted()
         .peekable()
         .group_by(|input| input.timestamp() / SEGMENT_NANOS);
 
@@ -159,7 +155,7 @@ fn process_log(
                 eprintln!("Skipping existing {seg_video_path:?}");
                 None
             }
-            _ => Some(SegmentVideoEncoder::new(&seg_video_path, &source_video)?),
+            _ => Some(SegmentVideoEncoder::new(&seg_video_path, &properties)?),
         };
 
         let first_ts = match inputs.peek() {

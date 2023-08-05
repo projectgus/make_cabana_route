@@ -110,22 +110,17 @@ pub fn read_can_messages(
         .flexible(true)
         .from_path(csv_log_path)?;
 
-    let mut result: Vec<CANMessage> = Vec::new();
-
-    for can_msg in rdr.records().map(|r| match r {
-        Ok(r) => CANMessage::parse_from(r, can_ts_offs),
-        Err(e) => panic!("Error reading CSV file: {}", e), // TODO: error handling!
-    }) {
-        let can_msg = can_msg?;
-
+    Ok(rdr
+        .records()
+        .map(|r| match r {
+            Ok(r) => CANMessage::parse_from(r, can_ts_offs),
+            Err(e) => panic!("Error reading CSV file: {}", e), // TODO: error handling!
+        })
+        .map(|m| m.unwrap()) // TODO: more error handling!
         // TODO: For now dropping any CAN timestamp that comes before the video
         // started. Could conceivably adjust the start earlier instead and have empty video
-        if can_msg.timestamp >= 0 {
-            result.push(can_msg);
-        }
-    }
-
-    return Ok(result);
+        .filter(|m| m.timestamp >= 0)
+        .collect())
 }
 
 // Struct to wrap writing an rlog.bz2 file

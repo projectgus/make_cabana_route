@@ -481,6 +481,7 @@ dependencies = [
  "csv",
  "ffmpeg",
  "itertools",
+ "merging-iterator",
  "serde",
  "serde_yaml",
 ]
@@ -490,6 +491,12 @@ name = "memchr"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2dffe52ecf27772e601905b7522cb4ef790d2cc203488bbd0e2fe85fcb74566d"
+
+[[package]]
+name = "merging-iterator"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0eda55172050e028dfd9d0b4335cbdbeaf81adf2b1f2dc463285e819e9a67eae"
 
 [[package]]
 name = "minimal-lexical"

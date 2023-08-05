@@ -8,42 +8,39 @@ const TARGET_FPS: u32 = 20;
 pub struct SegmentVideoEncoder {
     octx: format::context::Output,
     encoder: encoder::Video,
-    decoder_time_base: Rational,
     video_stream_index: usize,
     frame_count: usize,
     pkt_count: usize,
 }
 
 impl SegmentVideoEncoder {
-    pub fn new(path: &Path, source: &SourceVideo) -> Result<Self, Box<dyn Error>> {
+    pub fn new(path: &Path, properties: &VideoProperties) -> Result<Self, Box<dyn Error>> {
         let mut octx = format::output(&path).unwrap();
 
         let mut ost = octx.add_stream()?;
         let video_stream_index = ost.index();
 
         let codec = encoder::find(codec::Id::HEVC).unwrap();
-        let mut encoder = codec::Encoder::new(codec)?.video()?;
+        let mut video = codec::Encoder::new(codec)?.video()?;
 
-        let decoder = source.video_decoder();
-
-        encoder.set_height(decoder.height());
-        encoder.set_width(decoder.width());
-        encoder.set_aspect_ratio(decoder.aspect_ratio());
-        encoder.set_format(decoder.format());
-        encoder.set_frame_rate(Some(Rational::new(TARGET_FPS as i32, 1)));
-        encoder.set_colorspace(decoder.color_space());
-        encoder.set_color_range(decoder.color_range());
+        video.set_height(properties.height);
+        video.set_width(properties.width);
+        video.set_aspect_ratio(properties.aspect_ratio);
+        video.set_format(properties.format);
+        video.set_frame_rate(Some(Rational::new(TARGET_FPS as i32, 1)));
+        video.set_colorspace(properties.color_space);
+        video.set_color_range(properties.color_range);
 
         // This time base seems to be required by HEVC, but unsure how it's supposed
         // to be set
-        encoder.set_time_base(decoder.time_base().invert()); //Rational::new(1, 90000));
-        encoder.set_flags(codec::Flags::GLOBAL_HEADER);
+        video.set_time_base(properties.time_base.invert()); //Rational::new(1, 90000));
+        video.set_flags(codec::Flags::GLOBAL_HEADER);
 
         eprintln!("Writing segment video to {}...", path.display());
 
         let mut x264_opts = Dictionary::new();
         x264_opts.set("preset", "medium");
-        let encoder = encoder.open().expect("error opening HEVC encoder");
+        let encoder = video.open().expect("error opening HEVC encoder");
         ost.set_parameters(encoder.parameters());
 
         //octx.set_metadata(metadata);
@@ -53,7 +50,6 @@ impl SegmentVideoEncoder {
         Ok(Self {
             octx,
             encoder,
-            decoder_time_base: decoder.time_base(),
             video_stream_index,
             frame_count: 0,
             pkt_count: 0,
@@ -74,7 +70,7 @@ impl SegmentVideoEncoder {
             self.pkt_count += 1;
             encoded.set_stream(self.video_stream_index);
             //dbg!(encoded.pts(), encoded.dts());
-            encoded.rescale_ts(self.decoder_time_base, self.encoder.time_base());
+            //encoded.rescale_ts(self.decoder_time_base, self.encoder.time_base());
             //dbg!(encoded.pts(), encoded.dts());
             encoded.write_interleaved(&mut self.octx).unwrap();
         }
@@ -93,6 +89,22 @@ impl SegmentVideoEncoder {
 pub struct SourceVideo {
     ictx: format::context::Input,
     video_stream_index: usize,
+}
+
+// It's hard to borrow the source ffmpeg Video struct for each encoding session, as
+// it requires borrowing it and it's also borrowed for the source frames.
+//
+// Hence, make this little wrapper struct to copy around the key properties of
+// the source video and use for each segment.
+#[derive(Clone)]
+pub struct VideoProperties {
+    height: u32,
+    width: u32,
+    aspect_ratio: Rational,
+    format: format::Pixel,
+    time_base: Rational,
+    color_space: ffmpeg::color::Space,
+    color_range: ffmpeg::color::Range,
 }
 
 #[derive(Eq, PartialEq)]
@@ -136,6 +148,19 @@ impl SourceVideo {
             packets,
             decoder,
             video_stream_index: self.video_stream_index,
+        }
+    }
+
+    pub fn properties(&self) -> VideoProperties {
+        let decoder = self.video_decoder();
+        VideoProperties {
+            height: decoder.height(),
+            width: decoder.width(),
+            aspect_ratio: decoder.aspect_ratio(),
+            format: decoder.format(),
+            time_base: decoder.time_base(),
+            color_space: decoder.color_space(),
+            color_range: decoder.color_range(),
         }
     }
 }
