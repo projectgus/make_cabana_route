@@ -174,16 +174,15 @@ fn process_log(
         let mut can_msgs: Vec<CANMessage> = vec![];
 
         for input in inputs {
+            if !can_msgs.is_empty() && input.timestamp() - can_msgs[0].timestamp() > CAN_EVENT_LEN {
+                // Flush the current set of CAN messages to an event
+                // in rlog whenever CAN_EVENT_LEN time has passed
+                rlog.write_can(&can_msgs);
+                can_msgs.clear();
+            }
+
             match input {
                 LogInput::CAN(can_msg) => {
-                    if !can_msgs.is_empty()
-                        && can_msg.timestamp() - can_msgs[0].timestamp() > CAN_EVENT_LEN
-                    {
-                        // Flush the current set of CAN messages to an event
-                        // in rlog whenever it spans more than CAN_EVENT_LEN
-                        rlog.write_can(&can_msgs);
-                        can_msgs.clear();
-                    }
                     can_msgs.push(can_msg);
                 }
                 LogInput::Frame(ref frame) => {

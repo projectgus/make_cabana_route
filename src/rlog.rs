@@ -189,9 +189,7 @@ impl RLogWriter {
                 evt_msg.set_address(msg.can_id as u32);
                 evt_msg.set_dat(&msg.data);
                 evt_msg.set_src(msg.bus_no);
-
-                // Not sure what to do with BusTime property
-                evt_msg.set_bus_time((msg.timestamp % 0xFFFF) as u16);
+                evt_msg.set_bus_time(0);
             }
         });
     }
