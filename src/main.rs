@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local};
 use clap::Parser;
 use itertools::Itertools;
 use make_route::log_capnp::sentinel::SentinelType;
@@ -39,6 +39,7 @@ struct Args {
 struct LogInfo {
     car: String,
     car_details: String,
+    route_timestamp: Option<DateTime<Local>>,
     logfile: String, // Path?
     video: String,
     sync: LogSyncInfo,
@@ -79,15 +80,21 @@ fn main() -> Result<(), Box<dyn Error>> {
         let log_path = log_dir.join(log_info.logfile);
         let video_path = log_dir.join(log_info.video);
 
-        /* See replay Route::parseRoute() in cabana for the regex that loads the route name.
-         *
-         * There is an optional 16 character hex prefix field with the dongle ID.
-         * Currently leave this off, it looks like Cabana may be happy without it.
-         */
+        // Routes are identified in openpilot by their timestamp.
+        //
+        // If route_timestamp is set in the YAML file, use this. Otherwise,
+        // use the modification date of the video file.
+        let metadata = fs::metadata(&video_path)?;
+        let created: DateTime<Local> = match log_info.route_timestamp {
+            Some(dt) => dt,
+            _ => metadata.modified().unwrap().into(),
+        };
 
-        // TODO: base this off an entry in the YAML file not file metadata
-        let metadata = fs::metadata(&log_path)?;
-        let created: DateTime<Utc> = metadata.created()?.into();
+        /* See replay Route::parseRoute() in openpilot for the regex that resolves the route name.
+         *
+         * Routes also have an optional 16 character hex suffix field with the dongle ID.
+         * Currently leave this off, it looks like Cabana is happy without it.
+         */
         let route_name = created.format("%Y-%m-%d--%H-%M-%S").to_string();
         let mut route_dir_base = args.data_dir.to_path_buf();
         route_dir_base.push(route_name);

@@ -9,7 +9,7 @@ build = "build.rs"
 [dependencies]
 bzip2 = "0.4.4"
 capnp = "0.16.1"
-chrono = "0.4.24"
+chrono = { version = "0.4.24", features = ["serde"] }
 clap = { version = "4.3.19", features = ["derive"] }
 csv = "1.2.1"
 ffmpeg = { git = "https://github.com/meh/rust-ffmpeg.git", branch = "master", version = "0.6.0" }
