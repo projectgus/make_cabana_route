@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use clap::Parser;
 use itertools::Itertools;
 use make_route::log_capnp::sentinel::SentinelType;
-use make_route::rlog::{read_can_messages, CANMessage, LogInput, RLogWriter};
+use make_route::qlog::{read_can_messages, CANMessage, LogInput, QlogWriter};
 use make_route::video::{SegmentVideoEncoder, SourceVideo};
 use make_route::Nanos;
 use merging_iterator::MergeIter;
@@ -148,7 +148,7 @@ fn process_log(
 
         std::fs::create_dir_all(&segment_dir)?;
 
-        let mut rlog = RLogWriter::new(segment_dir.join("rlog.bz2"))?;
+        let mut qlog = QlogWriter::new(segment_dir.join("qlog.bz2"))?;
         let seg_video_path = segment_dir.join("qcamera.ts");
 
         // Only encode new segment videos if they don't already exist, as this is the slowest
@@ -166,13 +166,13 @@ fn process_log(
             None => 0,
         };
 
-        rlog.write_init_data(first_ts);
+        qlog.write_init_data(first_ts);
 
         if segment_idx == 0 {
-            rlog.write_car_params(first_ts);
-            rlog.write_sentinel(first_ts, SentinelType::StartOfRoute);
+            qlog.write_car_params(first_ts);
+            qlog.write_sentinel(first_ts, SentinelType::StartOfRoute);
         }
-        rlog.write_sentinel(first_ts, SentinelType::StartOfSegment);
+        qlog.write_sentinel(first_ts, SentinelType::StartOfSegment);
 
         let mut last_thumbnail: Nanos = 0;
 
@@ -182,8 +182,8 @@ fn process_log(
             if !can_msgs.is_empty() && input.timestamp() - can_msgs[0].timestamp() > CAN_EVENT_TIME
             {
                 // Flush the current set of CAN messages to an event
-                // in rlog whenever CAN_EVENT_LEN time has passed
-                rlog.write_can(&can_msgs);
+                // in qlog whenever CAN_EVENT_LEN time has passed
+                qlog.write_can(&can_msgs);
                 can_msgs.clear();
             }
 
@@ -198,10 +198,10 @@ fn process_log(
                         encode.send_frame(&frame)?;
                     }
 
-                    rlog.write_frame_encode_idx(ts, segment_idx as i32, frame_id);
+                    qlog.write_frame_encode_idx(ts, segment_idx as i32, frame_id);
                     if ts - last_thumbnail > THUMBNAIL_INTERVAL {
                         let jpeg = frame.encode_jpeg()?;
-                        rlog.write_thumbnail(ts, ts + THUMBNAIL_INTERVAL, frame_id, &jpeg);
+                        qlog.write_thumbnail(ts, ts + THUMBNAIL_INTERVAL, frame_id, &jpeg);
                         last_thumbnail = ts;
                     }
 
@@ -211,7 +211,7 @@ fn process_log(
         }
 
         // Flush any final batch of CAN messages
-        rlog.write_can(&can_msgs);
+        qlog.write_can(&can_msgs);
 
         if let Some(encode) = segment_video {
             encode.finish();
@@ -224,7 +224,7 @@ fn process_log(
             }
         }
 
-        rlog.write_sentinel(0, SentinelType::EndOfSegment);
+        qlog.write_sentinel(0, SentinelType::EndOfSegment);
     }
 
     Ok(())

@@ -123,13 +123,13 @@ pub fn read_can_messages(
         .collect())
 }
 
-// Struct to wrap writing an rlog.bz2 file
-pub struct RLogWriter {
+// Struct to wrap writing an qlog.bz2 file
+pub struct QlogWriter {
     last_timestamp: Nanos,
     writer: BzEncoder<File>,
 }
 
-impl RLogWriter {
+impl QlogWriter {
     pub fn new(path: PathBuf) -> Result<Self, std::io::Error> {
         let writer = BzEncoder::new(File::create(&path)?, Compression::new(6));
         Ok(Self {
