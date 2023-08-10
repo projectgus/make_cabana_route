@@ -98,7 +98,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             route_dir_base.as_os_str(),
             log_info.sync.can_ts_offs(),
         )?;
-        break; // Stop early
     }
 
     Ok(())
