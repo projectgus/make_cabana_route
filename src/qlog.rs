@@ -95,8 +95,8 @@ impl CANMessage {
         })
     }
 
-    pub fn timestamp(self: &Self) -> Nanos {
-        return self.timestamp;
+    pub fn timestamp(&self) -> Nanos {
+        self.timestamp
     }
 }
 
@@ -131,18 +131,14 @@ pub struct QlogWriter {
 
 impl QlogWriter {
     pub fn new(path: PathBuf) -> Result<Self, std::io::Error> {
-        let writer = BzEncoder::new(File::create(&path)?, Compression::new(6));
+        let writer = BzEncoder::new(File::create(path)?, Compression::new(6));
         Ok(Self {
             writer,
             last_timestamp: 0,
         })
     }
 
-    fn write_event(
-        self: &mut Self,
-        mono_time: Nanos,
-        fill_event_cb: impl Fn(log_capnp::event::Builder),
-    ) {
+    fn write_event(&mut self, mono_time: Nanos, fill_event_cb: impl Fn(log_capnp::event::Builder)) {
         let mut message = ::capnp::message::Builder::new_default();
         let mut event = message.init_root::<log_capnp::event::Builder>();
 
@@ -155,13 +151,13 @@ impl QlogWriter {
         capnp::serialize::write_message(&mut self.writer, &message).unwrap();
     }
 
-    pub fn write_init_data(self: &mut Self, mono_time: Nanos) {
+    pub fn write_init_data(&mut self, mono_time: Nanos) {
         self.write_event(mono_time, |event| {
             let mut _init_data = event.init_init_data(); // Not setting any fields here for now
         });
     }
 
-    pub fn write_car_params(self: &mut Self, mono_time: Nanos) {
+    pub fn write_car_params(&mut self, mono_time: Nanos) {
         self.write_event(mono_time, |event| {
             let mut car_params = event.init_car_params();
             car_params.set_car_name("TODO name");
@@ -169,7 +165,7 @@ impl QlogWriter {
         });
     }
 
-    pub fn write_sentinel(self: &mut Self, mono_time: Nanos, sentinel_type: SentinelType) {
+    pub fn write_sentinel(&mut self, mono_time: Nanos, sentinel_type: SentinelType) {
         self.write_event(mono_time, |event| {
             let mut sentinel = event.init_sentinel();
             sentinel.set_type(sentinel_type);
@@ -186,7 +182,7 @@ impl QlogWriter {
             let mut can_evt = event.init_can(len);
             for (idx, msg) in can_msgs.iter().enumerate() {
                 let mut evt_msg = can_evt.reborrow().get(idx as u32);
-                evt_msg.set_address(msg.can_id as u32);
+                evt_msg.set_address(msg.can_id);
                 evt_msg.set_dat(&msg.data);
                 evt_msg.set_src(msg.bus_no);
                 evt_msg.set_bus_time(0);

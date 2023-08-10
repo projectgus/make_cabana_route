@@ -21,7 +21,7 @@ pub struct SegmentVideoEncoder {
 
 impl SegmentVideoEncoder {
     pub fn new(path: &Path, properties: &VideoProperties) -> Result<Self, Box<dyn Error>> {
-        let mut octx = format::output(&path).unwrap();
+        let mut octx = format::output(path).unwrap();
 
         let mut ost = octx.add_stream()?;
         let video_stream_index = ost.index();
@@ -50,7 +50,7 @@ impl SegmentVideoEncoder {
         ost.set_parameters(encoder.parameters());
 
         //octx.set_metadata(metadata);
-        format::context::output::dump(&mut octx, 0, path.to_str());
+        format::context::output::dump(&octx, 0, path.to_str());
         octx.write_header().unwrap();
 
         Ok(Self {
@@ -121,7 +121,7 @@ pub struct SourceFrame {
 
 impl SourceVideo {
     pub fn new(video_file: &Path) -> Result<Self, Box<dyn Error>> {
-        let ictx = format::input(&video_file)?;
+        let ictx = format::input(video_file)?;
         let input = ictx
             .streams()
             .best(media::Type::Video)
@@ -141,8 +141,7 @@ impl SourceVideo {
             .best(media::Type::Video)
             .ok_or(ffmpeg::Error::StreamNotFound)
             .unwrap(); // TODO: error handling!
-        let decoder = input.decoder().unwrap().open().unwrap().video().unwrap(); // TODO: error handling!
-        decoder
+        input.decoder().unwrap().open().unwrap().video().unwrap() // TODO: error handling!
     }
 
     // Didn't have any luck implementing IntoIter for this, but this is kind of better
@@ -197,11 +196,11 @@ impl<'a> Iterator for SourceFrameIterator<'a> {
         let mut receive_frames = |decoder: &mut decoder::Video| -> Option<Self::Item> {
             let time_base = decoder.time_base();
             let timebase_ns =
-                (time_base.numerator() as i64 * 1000_000_000) / time_base.denominator() as i64;
+                (time_base.numerator() as i64 * 1_000_000_000) / time_base.denominator() as i64;
             let jpeg_scaler_context = self.jpeg_scaler_context.clone();
 
             let mut frame = frame::Video::empty();
-            while let Some(res) = self.packets.next() {
+            for res in self.packets.by_ref() {
                 let (stream, packet) = res.unwrap(); // TODO: handle error properly
                 if stream.index() == self.video_stream_index {
                     decoder.send_packet(&packet).unwrap(); // TODO: handle error properly
@@ -223,7 +222,7 @@ impl<'a> Iterator for SourceFrameIterator<'a> {
         }
 
         self.decoder.send_eof().unwrap(); // TODO: handle error properly
-        return receive_frames(&mut self.decoder);
+        receive_frames(&mut self.decoder)
     }
 }
 
@@ -251,7 +250,7 @@ impl SourceFrame {
 
 impl PartialEq for SourceFrame {
     fn eq(&self, other: &Self) -> bool {
-        return self.ts_ns == other.ts_ns && self.frame == other.frame;
+        self.ts_ns == other.ts_ns && self.frame == other.frame
     }
 }
 

@@ -7,7 +7,6 @@ use make_route::video::{SegmentVideoEncoder, SourceVideo};
 use make_route::Nanos;
 use merging_iterator::MergeIter;
 use serde::Deserialize;
-use serde_yaml;
 use std::error::Error;
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -57,11 +56,11 @@ impl LogSyncInfo {
     */
     fn can_ts_offs(&self) -> Nanos {
         // The video timestamp that corresponds to log timestamp
-        let video_us = (self.video_s * 1000_000.0) as i64;
+        let video_us = (self.video_s * 1_000_000.0) as i64;
         // The log timestamp that corresponds to video timestamp 0:00
         let log_us_at_zero = self.log_us - video_us;
 
-        return log_us_at_zero * 1000;
+        log_us_at_zero * 1000
     }
 }
 
@@ -120,16 +119,16 @@ fn process_log(
     // (not guaranteed from the CSV log, if there are CAN messages from >1 bus)
     let can_inputs = read_can_messages(log_path, can_ts_offs)?
         .into_iter()
-        .map(|m| LogInput::CAN(m))
+        .map(LogInput::CAN)
         .sorted();
 
     eprintln!("Opening video {video_path:?}...");
 
-    let mut source_video = SourceVideo::new(&video_path)?;
+    let mut source_video = SourceVideo::new(video_path)?;
 
     let properties = source_video.properties();
 
-    let frame_inputs = source_video.video_frames().map(|f| LogInput::Frame(f));
+    let frame_inputs = source_video.video_frames().map(LogInput::Frame);
 
     eprintln!("Preparing source data...");
 
@@ -201,7 +200,7 @@ fn process_log(
                     let ts = input.timestamp();
 
                     if let Some(ref mut encode) = segment_video {
-                        encode.send_frame(&frame)?;
+                        encode.send_frame(frame)?;
                     }
 
                     qlog.write_frame_encode_idx(ts, segment_idx as i32, frame_id);
