@@ -17,8 +17,11 @@ use std::time::Duration;
 // Duration of a route segment
 const SEGMENT_NANOS: Nanos = Duration::from_secs(60).as_nanos() as Nanos;
 
-// Up to 10ms of CAN messages are grouped into one CAN event
-const CAN_EVENT_LEN: Nanos = 10 * 1000 * 1000;
+// Each CAN event can span up to this long (effectively, giving all those messages the same timestamp)
+const CAN_EVENT_TIME: Nanos = Duration::from_millis(10).as_nanos() as Nanos;
+
+// Insert a thumbnail at these intervals
+const THUMBNAIL_INTERVAL: Nanos = Duration::from_millis(2500).as_nanos() as Nanos;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -171,10 +174,13 @@ fn process_log(
         }
         rlog.write_sentinel(first_ts, SentinelType::StartOfSegment);
 
+        let mut last_thumbnail: Nanos = 0;
+
         let mut can_msgs: Vec<CANMessage> = vec![];
 
         for input in inputs {
-            if !can_msgs.is_empty() && input.timestamp() - can_msgs[0].timestamp() > CAN_EVENT_LEN {
+            if !can_msgs.is_empty() && input.timestamp() - can_msgs[0].timestamp() > CAN_EVENT_TIME
+            {
                 // Flush the current set of CAN messages to an event
                 // in rlog whenever CAN_EVENT_LEN time has passed
                 rlog.write_can(&can_msgs);
@@ -186,14 +192,20 @@ fn process_log(
                     can_msgs.push(can_msg);
                 }
                 LogInput::Frame(ref frame) => {
+                    let ts = input.timestamp();
+
                     if let Some(ref mut encode) = segment_video {
                         encode.send_frame(&frame)?;
                     }
 
-                    rlog.write_frame_encode_idx(input.timestamp(), segment_idx as i32, frame_id);
-                    frame_id += 1;
+                    rlog.write_frame_encode_idx(ts, segment_idx as i32, frame_id);
+                    if ts - last_thumbnail > THUMBNAIL_INTERVAL {
+                        let jpeg = frame.encode_jpeg()?;
+                        rlog.write_thumbnail(ts, ts + THUMBNAIL_INTERVAL, frame_id, &jpeg);
+                        last_thumbnail = ts;
+                    }
 
-                    // TODO: Write a thumbnail to rlog periodically
+                    frame_id += 1;
                 }
             }
         }

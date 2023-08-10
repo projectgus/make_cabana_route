@@ -1,9 +1,15 @@
-use std::error::Error;
 use std::path::Path;
+use std::rc::Rc;
+use std::{cell::RefCell, error::Error};
 
-use ffmpeg::{codec, decoder, encoder, format, frame, media, Dictionary, Packet, Rational};
+use ffmpeg::{
+    codec, decoder, encoder, format, frame, media, software::scaling, Dictionary, Packet, Rational,
+};
+use jpeg_encoder;
 
 const TARGET_FPS: u32 = 20;
+
+const JPEG_QUALITY: u8 = 80;
 
 pub struct SegmentVideoEncoder {
     octx: format::context::Output,
@@ -107,10 +113,10 @@ pub struct VideoProperties {
     color_range: ffmpeg::color::Range,
 }
 
-#[derive(Eq, PartialEq)]
 pub struct SourceFrame {
     pub frame: frame::Video,
     pub ts_ns: i64,
+    jpeg_scaler_context: Rc<RefCell<scaling::Context>>,
 }
 
 impl SourceVideo {
@@ -143,11 +149,23 @@ impl SourceVideo {
     // as more flexible
     pub fn video_frames(&mut self) -> SourceFrameIterator<'_> {
         let decoder = self.video_decoder();
+        let jpeg_scaler_context = scaling::Context::get(
+            decoder.format(),
+            decoder.width(),
+            decoder.height(),
+            format::Pixel::RGB24,
+            decoder.width(), // TODO: decide if we actually should scale down
+            decoder.height(),
+            scaling::Flags::BILINEAR,
+        )
+        .unwrap(); // TODO: better error handler here?
+        let jpeg_scaler_context = Rc::new(RefCell::new(jpeg_scaler_context));
         let packets = self.ictx.packets();
         SourceFrameIterator {
             packets,
             decoder,
             video_stream_index: self.video_stream_index,
+            jpeg_scaler_context,
         }
     }
 
@@ -169,6 +187,7 @@ pub struct SourceFrameIterator<'a> {
     decoder: decoder::Video,
     packets: format::context::input::PacketIter<'a>,
     video_stream_index: usize,
+    jpeg_scaler_context: Rc<RefCell<scaling::Context>>,
 }
 
 impl<'a> Iterator for SourceFrameIterator<'a> {
@@ -179,6 +198,7 @@ impl<'a> Iterator for SourceFrameIterator<'a> {
             let time_base = decoder.time_base();
             let timebase_ns =
                 (time_base.numerator() as i64 * 1000_000_000) / time_base.denominator() as i64;
+            let jpeg_scaler_context = self.jpeg_scaler_context.clone();
 
             let mut frame = frame::Video::empty();
             while let Some(res) = self.packets.next() {
@@ -187,7 +207,11 @@ impl<'a> Iterator for SourceFrameIterator<'a> {
                     decoder.send_packet(&packet).unwrap(); // TODO: handle error properly
                     if decoder.receive_frame(&mut frame).is_ok() {
                         let ts_ns = frame.pts().unwrap() * timebase_ns;
-                        return Some(Self::Item { frame, ts_ns });
+                        return Some(Self::Item {
+                            frame,
+                            ts_ns,
+                            jpeg_scaler_context,
+                        });
                     }
                 }
             }
@@ -202,3 +226,33 @@ impl<'a> Iterator for SourceFrameIterator<'a> {
         return receive_frames(&mut self.decoder);
     }
 }
+
+impl SourceFrame {
+    pub fn encode_jpeg(&self) -> Result<Vec<u8>, Box<dyn Error>> {
+        let mut scaler = self.jpeg_scaler_context.try_borrow_mut()?;
+
+        let mut rgb_frame = frame::Video::empty();
+        scaler.run(&self.frame, &mut rgb_frame)?;
+
+        let mut res = vec![];
+
+        let encoder = jpeg_encoder::Encoder::new(&mut res, JPEG_QUALITY);
+
+        encoder.encode(
+            rgb_frame.data(0),
+            self.frame.width() as u16,
+            self.frame.height() as u16,
+            jpeg_encoder::ColorType::Rgb,
+        )?;
+
+        Ok(res)
+    }
+}
+
+impl PartialEq for SourceFrame {
+    fn eq(&self, other: &Self) -> bool {
+        return self.ts_ns == other.ts_ns && self.frame == other.frame;
+    }
+}
+
+impl Eq for SourceFrame {}

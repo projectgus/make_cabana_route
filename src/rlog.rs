@@ -207,4 +207,19 @@ impl RLogWriter {
             encode_idx.set_timestamp_eof(mono_time as u64); // TODO: set properly
         });
     }
+
+    pub fn write_thumbnail(
+        &mut self,
+        mono_time: Nanos,
+        end_ts: Nanos,
+        frame_id: u32,
+        jpeg_data: &[u8],
+    ) {
+        self.write_event(mono_time, |event| {
+            let mut thumbnail = event.init_thumbnail();
+            thumbnail.set_frame_id(frame_id);
+            thumbnail.set_timestamp_eof(end_ts as u64);
+            thumbnail.set_thumbnail(jpeg_data);
+        });
+    }
 }
