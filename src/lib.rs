@@ -1,3 +1,4 @@
+pub mod input;
 pub mod qlog;
 pub mod video;
 

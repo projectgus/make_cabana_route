@@ -1,15 +1,14 @@
 use chrono::{DateTime, Local};
 use clap::Parser;
 use itertools::Itertools;
+use make_route::input::{read_can_messages, CANMessage, LogInput};
 use make_route::log_capnp::sentinel::SentinelType;
-use make_route::qlog::{read_can_messages, CANMessage, LogInput, QlogWriter};
+use make_route::qlog::QlogWriter;
 use make_route::video::{SegmentVideoEncoder, SourceVideo};
 use make_route::Nanos;
 use merging_iterator::MergeIter;
 use serde::Deserialize;
 use std::error::Error;
-use std::ffi::{OsStr, OsString};
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -39,9 +38,60 @@ struct LogInfo {
     car: String,
     car_details: String,
     route_timestamp: Option<DateTime<Local>>,
-    logfile: String, // Path?
-    video: String,
+    logfile: PathBuf,
+    video: Option<PathBuf>,
     sync: LogSyncInfo,
+}
+
+impl LogInfo {
+    // Convert relative paths to absolute ones, return an error if paths don't exist
+    fn canonicalise_paths(&mut self, relative_to: &Path) -> Result<(), Box<dyn Error>> {
+        let relative_to = relative_to.canonicalize()?;
+        self.logfile = relative_to.join(&self.logfile);
+
+        // Check logfile exists
+        self.logfile.metadata()?;
+
+        if let Some(video) = &self.video {
+            let video = relative_to.join(video);
+            // Check video exists
+            video.metadata()?;
+            self.video = Some(video);
+        }
+
+        Ok(())
+    }
+
+    // Routes are identified in openpilot by their timestamp.
+    //
+    // If route_timestamp is set in the YAML file, use this. Otherwise,
+    // use the modification date of the video file or the log file..
+    fn route_timestamp(&self) -> DateTime<Local> {
+        if let Some(ts) = self.route_timestamp {
+            ts
+        } else if let Some(video) = &self.video {
+            video.metadata().unwrap().modified().unwrap().into()
+        } else {
+            self.logfile.metadata().unwrap().modified().unwrap().into()
+        }
+    }
+
+    // Segment directories in the data directory are based on the route timestamp,
+    // plus a suffix for the segment number
+    //
+    // See replay Route::parseRoute() in openpilot for the regex that resolves the route name.
+    //
+    // Routes also have an optional 16 character hex suffix field with the dongle ID.
+    // Currently leave this off, it looks like Cabana is happy without it.
+    fn segment_dir_path(&self, data_dir: &Path, segment_idx: i64) -> PathBuf {
+        let mut result = data_dir.to_path_buf();
+        result.push(format!(
+            "{}--{}",
+            self.route_timestamp().format("%Y-%m-%d--%H-%M-%S"),
+            segment_idx
+        ));
+        result
+    }
 }
 
 #[derive(Deserialize, PartialEq, Debug)]
@@ -69,71 +119,50 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let args = Args::parse();
 
-    let yaml_abs = args.yaml_path.canonicalize()?;
-    let log_dir = yaml_abs.parent().unwrap();
+    let f = std::fs::File::open(&args.yaml_path)?;
+    let mut logs: Vec<LogInfo> = serde_yaml::from_reader(f)?;
 
-    let f = std::fs::File::open(args.yaml_path)?;
-    let logs: Vec<LogInfo> = serde_yaml::from_reader(f)?;
+    // Fix up paths, this will also error out early if any files are not found
+    for info in &mut logs {
+        info.canonicalise_paths(&args.yaml_path)?;
+    }
 
-    for log_info in logs {
-        let log_path = log_dir.join(log_info.logfile);
-        let video_path = log_dir.join(log_info.video);
-
-        // Routes are identified in openpilot by their timestamp.
-        //
-        // If route_timestamp is set in the YAML file, use this. Otherwise,
-        // use the modification date of the video file.
-        let metadata = fs::metadata(&video_path)?;
-        let created: DateTime<Local> = match log_info.route_timestamp {
-            Some(dt) => dt,
-            _ => metadata.modified().unwrap().into(),
-        };
-
-        /* See replay Route::parseRoute() in openpilot for the regex that resolves the route name.
-         *
-         * Routes also have an optional 16 character hex suffix field with the dongle ID.
-         * Currently leave this off, it looks like Cabana is happy without it.
-         */
-        let route_name = created.format("%Y-%m-%d--%H-%M-%S").to_string();
-        let mut route_dir_base = args.data_dir.to_path_buf();
-        route_dir_base.push(route_name);
-
-        process_log(
-            &log_path,
-            &video_path,
-            route_dir_base.as_os_str(),
-            log_info.sync.can_ts_offs(),
-        )?;
+    for info in &logs {
+        process_log(info, &args.data_dir)?;
     }
 
     Ok(())
 }
 
-fn process_log(
-    log_path: &Path,
-    video_path: &Path,
-    route_dir_base: &OsStr,
-    can_ts_offs: Nanos,
-) -> Result<(), Box<dyn Error>> {
+fn process_log(info: &LogInfo, data_dir: &Path) -> Result<(), Box<dyn Error>> {
     // Read CAN messages, and sort them by timestamp
     // (not guaranteed from the CSV log, if there are CAN messages from >1 bus)
-    let can_inputs = read_can_messages(log_path, can_ts_offs)?
+    eprintln!("Loading CAN messages {0:?}...", info.logfile);
+    let can_inputs = read_can_messages(&info.logfile, info.sync.can_ts_offs())?
         .into_iter()
         .map(LogInput::CAN)
         .sorted();
 
-    eprintln!("Opening video {video_path:?}...");
+    let mut source_video = None;
+    let mut video_properties = None;
 
-    let mut source_video = SourceVideo::new(video_path)?;
+    if let Some(video_path) = &info.video {
+        eprintln!("Opening video {video_path:?}...");
+        let sv = SourceVideo::new(video_path)?;
+        video_properties = Some(sv.properties());
+        source_video = Some(sv);
+    };
 
-    let properties = source_video.properties();
-
-    let frame_inputs = source_video.video_frames().map(LogInput::Frame);
-
-    eprintln!("Preparing source data...");
-
-    // Merge the CAN and Frame inputs, keeping them sorted as we read them
-    let inputs = MergeIter::new(can_inputs, frame_inputs);
+    let inputs: Box<dyn Iterator<Item = LogInput>> = match &mut source_video {
+        Some(source_video) => {
+            // If we have video and CAN message inputs, merge them together
+            // keeping the output sorted by timestamp
+            let frames = source_video.video_frames().map(LogInput::Frame);
+            Box::new(MergeIter::new(can_inputs, frames))
+        }
+        // If only have CAN messages, can iterate them as-is
+        None => Box::new(can_inputs),
+    };
 
     // Sort the inputs and group them into segments
     let segments = inputs
@@ -142,12 +171,10 @@ fn process_log(
 
     for (segment_idx, inputs) in &segments {
         let mut inputs = inputs.peekable();
-        let mut segment_dir = OsString::from(route_dir_base);
-        segment_dir.push(format!("--{}", segment_idx));
 
         let mut frame_id = 0;
 
-        let segment_dir = PathBuf::from(segment_dir);
+        let segment_dir = info.segment_dir_path(data_dir, segment_idx);
 
         eprintln!("Writing segment {segment_idx} to {segment_dir:?}...");
 
@@ -156,14 +183,17 @@ fn process_log(
         let mut qlog = QlogWriter::new(segment_dir.join("qlog.bz2"))?;
         let seg_video_path = segment_dir.join("qcamera.ts");
 
-        // Only encode new segment videos if they don't already exist, as this is the slowest
-        // and most CPU intensive part
-        let mut segment_video = match seg_video_path.exists() {
-            true => {
+        let mut segment_video = if let Some(properties) = &video_properties {
+            if seg_video_path.exists() {
+                Some(SegmentVideoEncoder::new(&seg_video_path, properties).unwrap())
+            } else {
+                // Only encode new segment videos if they don't already exist, as this is the slowest
+                // and most CPU intensive part
                 eprintln!("Skipping existing {seg_video_path:?}");
                 None
             }
-            _ => Some(SegmentVideoEncoder::new(&seg_video_path, &properties)?),
+        } else {
+            None
         };
 
         let first_ts = match inputs.peek() {
@@ -184,10 +214,10 @@ fn process_log(
         let mut can_msgs: Vec<CANMessage> = vec![];
 
         for input in inputs {
+            // Flush the current set of CAN messages to an event
+            // in qlog whenever CAN_EVENT_LEN time has passed
             if !can_msgs.is_empty() && input.timestamp() - can_msgs[0].timestamp() > CAN_EVENT_TIME
             {
-                // Flush the current set of CAN messages to an event
-                // in qlog whenever CAN_EVENT_LEN time has passed
                 qlog.write_can(&can_msgs);
                 can_msgs.clear();
             }
