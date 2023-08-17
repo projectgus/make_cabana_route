@@ -46,7 +46,11 @@ struct LogInfo {
 impl LogInfo {
     // Convert relative paths to absolute ones, return an error if paths don't exist
     fn canonicalise_paths(&mut self, relative_to: &Path) -> Result<(), Box<dyn Error>> {
-        let relative_to = relative_to.canonicalize()?;
+        let relative_to = relative_to
+            .canonicalize()?
+            .parent()
+            .expect("relative_to file should always have a parent directory.")
+            .to_path_buf();
         self.logfile = relative_to.join(&self.logfile);
 
         // Check logfile exists
@@ -70,9 +74,19 @@ impl LogInfo {
         if let Some(ts) = self.route_timestamp {
             ts
         } else if let Some(video) = &self.video {
-            video.metadata().unwrap().modified().unwrap().into()
+            video
+                .metadata()
+                .expect("video file should already exist")
+                .modified()
+                .unwrap()
+                .into()
         } else {
-            self.logfile.metadata().unwrap().modified().unwrap().into()
+            self.logfile
+                .metadata()
+                .expect("logfile checked already")
+                .modified()
+                .expect("logfile checked already")
+                .into()
         }
     }
 
@@ -184,10 +198,10 @@ fn process_log(info: &LogInfo, data_dir: &Path) -> Result<(), Box<dyn Error>> {
         let seg_video_path = segment_dir.join("qcamera.ts");
 
         let mut segment_video = if let Some(properties) = &video_properties {
-            if seg_video_path.exists() {
-                Some(SegmentVideoEncoder::new(&seg_video_path, properties).unwrap())
+            if !seg_video_path.try_exists()? {
+                Some(SegmentVideoEncoder::new(&seg_video_path, properties)?)
             } else {
-                // Only encode new segment videos if they don't already exist, as this is the slowest
+                // Don't encode new a segment video if the it already exists, as this is the slowest
                 // and most CPU intensive part
                 eprintln!("Skipping existing {seg_video_path:?}");
                 None
@@ -196,10 +210,7 @@ fn process_log(info: &LogInfo, data_dir: &Path) -> Result<(), Box<dyn Error>> {
             None
         };
 
-        let first_ts = match inputs.peek() {
-            Some(first) => first.timestamp(),
-            None => 0,
-        };
+        let first_ts = inputs.peek().map(|f| f.timestamp()).unwrap_or(0);
 
         qlog.write_init_data(first_ts);
 
