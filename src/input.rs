@@ -80,10 +80,7 @@ impl PartialOrd for CANMessage {
 
 impl CANMessage {
     // TODO: improve error propagation
-    pub fn parse_from(record: csv::StringRecord, ts_offs: Nanos) -> Result<Self, Box<dyn Error>> {
-        let mut data: Vec<u8> = vec![];
-        data.reserve(8);
-
+    pub fn parse_from(record: &csv::StringRecord, ts_offs: Nanos) -> Result<Self, Box<dyn Error>> {
         // in this format, each record has a variable number of fields
         // and we want to concatenate the variable data fields
         let mut fields = record.iter();
@@ -92,12 +89,10 @@ impl CANMessage {
         let can_id = u32::from_str_radix(fields.next().unwrap(), 16)?;
         let is_extended_id = fields.next().unwrap() == "true";
         let bus_no = fields.next().unwrap().parse()?;
+        fields.next(); // dlen field, can skip this one
 
-        // iterate the remaining variable number of data fields d1..d8
-        // TODO: this can probably be made into .collect()
-        for d in fields {
-            data.push(u8::from_str_radix(d, 16)?);
-        }
+        // collect the remaining variable number of data fields d1..d8
+        let data = fields.map(|d| u8::from_str_radix(d, 16)).try_collect()?;
 
         Ok(CANMessage {
             timestamp: (ts_us * 1000) as Nanos - ts_offs,
