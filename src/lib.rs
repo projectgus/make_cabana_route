@@ -2,8 +2,6 @@ pub mod input;
 pub mod qlog;
 pub mod video;
 
-extern crate ffmpeg;
-
 // Type for nanosecond timestamps
 // TODO: Try using Duration for this and converting to nanos at time of encoding
 pub type Nanos = i64;
