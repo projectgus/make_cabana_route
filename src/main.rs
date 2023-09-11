@@ -41,7 +41,7 @@ struct LogInfo {
     route_timestamp: Option<DateTime<Local>>,
     logfile: PathBuf,
     video: Option<PathBuf>,
-    sync: LogSyncInfo,
+    sync: Option<LogSyncInfo>,
 }
 
 impl LogInfo {
@@ -150,10 +150,16 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn process_log(info: &LogInfo, data_dir: &Path) -> Result<(), Box<dyn Error>> {
+    if info.video.is_some() && info.sync.is_none() {
+        panic!("Video {0:?} requires a sync section to match", info.video); // TODO: better error handling!
+    }
+
+    let can_ts_offs = info.sync.as_ref().map(|s| s.can_ts_offs());
+
     // Read CAN messages, and sort them by timestamp
     // (not guaranteed from the CSV log, if there are CAN messages from >1 bus)
     eprintln!("Loading CAN messages {0:?}...", info.logfile);
-    let can_inputs = read_can_messages(&info.logfile, info.sync.can_ts_offs())?;
+    let can_inputs = read_can_messages(&info.logfile, can_ts_offs)?;
 
     let alerts_vec = find_missing_can_messages(&can_inputs);
     let alerts = expand_alerts(alerts_vec).into_iter();
@@ -181,10 +187,15 @@ fn process_log(info: &LogInfo, data_dir: &Path) -> Result<(), Box<dyn Error>> {
         None => Box::new(merge(can_inputs, alerts)),
     };
 
+    let mut inputs = inputs.peekable();
+
+    if inputs.peek().map(|i| i.timestamp()).unwrap_or(0) > SEGMENT_NANOS {
+        panic!("Segments should start from 0, the timestamp offset is set incorrectly");
+        // TODO: better error handling
+    }
+
     // Sort the inputs and group them into segments
-    let segments = inputs
-        .peekable()
-        .group_by(|input| input.timestamp() / SEGMENT_NANOS);
+    let segments = inputs.group_by(|input| input.timestamp() / SEGMENT_NANOS);
 
     for (segment_idx, inputs) in &segments {
         let mut inputs = inputs.peekable();

@@ -110,7 +110,7 @@ impl CANMessage {
 
 pub fn read_can_messages(
     csv_log_path: &Path,
-    can_ts_offs: Nanos,
+    can_ts_offs: Option<Nanos>,
 ) -> Result<Vec<CANMessage>, Box<dyn Error>> {
     eprintln!("Opening CAN log {:?}...", csv_log_path);
 
@@ -118,10 +118,21 @@ pub fn read_can_messages(
         .flexible(true)
         .from_path(csv_log_path)?;
 
-    Ok(rdr
-        .records()
+    let mut records = rdr.records().peekable();
+
+    let can_ts_offs = can_ts_offs.unwrap_or_else(|| match records.peek() {
+        // If no timestamp offset was specified, offset so the first message
+        // has timestamp 0
+        Some(Ok(record)) => match CANMessage::parse_from(record, 0) {
+            Ok(message) => message.timestamp(),
+            _ => 0,
+        },
+        _ => 0,
+    });
+
+    Ok(records
         .map(|r| match r {
-            Ok(r) => CANMessage::parse_from(r, can_ts_offs),
+            Ok(r) => CANMessage::parse_from(&r, can_ts_offs),
             Err(e) => panic!("Error reading CSV file: {}", e), // TODO: error handling!
         })
         .map(|m| m.unwrap()) // TODO: more error handling!
