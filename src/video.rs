@@ -31,7 +31,7 @@ impl SegmentVideoEncoder {
 
         video.set_height(properties.height);
         video.set_width(properties.width);
-        video.set_aspect_ratio(properties.aspect_ratio);
+        video.set_aspect_ratio(properties.aspect_ratio.unwrap()); // TODO: unwrap?
         video.set_format(properties.format);
         video.set_frame_rate(Some(Rational::new(TARGET_FPS as i32, 1)));
         video.set_colorspace(properties.color_space);
@@ -39,7 +39,9 @@ impl SegmentVideoEncoder {
 
         // This time base seems to be required by HEVC, but unsure how it's supposed
         // to be set
-        video.set_time_base(properties.time_base.invert()); //Rational::new(1, 90000));
+        if let Some(time_base) = properties.time_base {
+            video.set_time_base(Some(time_base.invert())); //Rational::new(1, 90000));
+        }
         video.set_flags(codec::Flags::GLOBAL_HEADER);
 
         eprintln!("Writing segment video to {}...", path.display());
@@ -106,9 +108,9 @@ pub struct SourceVideo {
 pub struct VideoProperties {
     height: u32,
     width: u32,
-    aspect_ratio: Rational,
+    aspect_ratio: Option<Rational>,
     format: format::Pixel,
-    time_base: Rational,
+    time_base: Option<Rational>,
     color_space: ffmpeg::color::Space,
     color_range: ffmpeg::color::Range,
 }
@@ -173,7 +175,7 @@ impl SourceVideo {
         VideoProperties {
             height: decoder.height(),
             width: decoder.width(),
-            aspect_ratio: decoder.aspect_ratio(),
+            aspect_ratio: Some(decoder.aspect_ratio()),
             format: decoder.format(),
             time_base: decoder.time_base(),
             color_space: decoder.color_space(),
@@ -194,7 +196,7 @@ impl<'a> Iterator for SourceFrameIterator<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut receive_frames = |decoder: &mut decoder::Video| -> Option<Self::Item> {
-            let time_base = decoder.time_base();
+            let time_base = decoder.time_base().unwrap(); // TODO
             let timebase_ns =
                 (time_base.numerator() as i64 * 1_000_000_000) / time_base.denominator() as i64;
             let jpeg_scaler_context = self.jpeg_scaler_context.clone();

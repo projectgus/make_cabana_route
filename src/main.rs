@@ -215,7 +215,7 @@ fn process_log(info: &LogInfo, data_dir: &Path) -> Result<(), Box<dyn Error>> {
         qlog.write_init_data(first_ts);
 
         if segment_idx == 0 {
-            qlog.write_car_params(first_ts);
+            qlog.write_car_params(first_ts, &info.car, &info.car_details);
             qlog.write_sentinel(first_ts, SentinelType::StartOfRoute);
         }
         qlog.write_sentinel(first_ts, SentinelType::StartOfSegment);

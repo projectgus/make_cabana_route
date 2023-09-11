@@ -41,11 +41,11 @@ impl QlogWriter {
         });
     }
 
-    pub fn write_car_params(&mut self, mono_time: Nanos) {
+    pub fn write_car_params(&mut self, mono_time: Nanos, car: &str, fingerprint: &str) {
         self.write_event(mono_time, |event| {
             let mut car_params = event.init_car_params();
-            car_params.set_car_name("TODO name");
-            car_params.set_car_fingerprint("TODO fingerprint");
+            car_params.set_car_name(car);
+            car_params.set_car_fingerprint(fingerprint);
         });
     }
 
