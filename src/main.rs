@@ -1,12 +1,13 @@
 use chrono::{DateTime, Local};
 use clap::Parser;
-use itertools::Itertools;
-use make_route::input::{read_can_messages, CANMessage, LogInput};
+use itertools::{merge, Itertools};
+use make_route::input::{
+    expand_alerts, find_missing_can_messages, read_can_messages, CANMessage, LogInput,
+};
 use make_route::log_capnp::sentinel::SentinelType;
 use make_route::qlog::QlogWriter;
 use make_route::video::{SegmentVideoEncoder, SourceVideo};
 use make_route::Nanos;
-use merging_iterator::MergeIter;
 use serde::Deserialize;
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -33,10 +34,10 @@ struct Args {
     data_dir: PathBuf,
 }
 
-#[derive(Deserialize, PartialEq, Debug)]
+#[derive(Deserialize, Debug)]
 struct LogInfo {
     car: String,
-    car_details: String,
+    fingerprint: String,
     route_timestamp: Option<DateTime<Local>>,
     logfile: PathBuf,
     video: Option<PathBuf>,
@@ -152,10 +153,10 @@ fn process_log(info: &LogInfo, data_dir: &Path) -> Result<(), Box<dyn Error>> {
     // Read CAN messages, and sort them by timestamp
     // (not guaranteed from the CSV log, if there are CAN messages from >1 bus)
     eprintln!("Loading CAN messages {0:?}...", info.logfile);
-    let can_inputs = read_can_messages(&info.logfile, info.sync.can_ts_offs())?
-        .into_iter()
-        .map(LogInput::CAN)
-        .sorted();
+    let can_inputs = read_can_messages(&info.logfile, info.sync.can_ts_offs())?;
+
+    let alerts_vec = find_missing_can_messages(&can_inputs);
+    let alerts = expand_alerts(alerts_vec).into_iter();
 
     let mut source_video = None;
     let mut video_properties = None;
@@ -167,15 +168,17 @@ fn process_log(info: &LogInfo, data_dir: &Path) -> Result<(), Box<dyn Error>> {
         source_video = Some(sv);
     };
 
+    let can_inputs = can_inputs.into_iter().map(LogInput::CAN);
+
     let inputs: Box<dyn Iterator<Item = LogInput>> = match &mut source_video {
         Some(source_video) => {
             // If we have video and CAN message inputs, merge them together
             // keeping the output sorted by timestamp
             let frames = source_video.video_frames().map(LogInput::Frame);
-            Box::new(MergeIter::new(can_inputs, frames))
+            Box::new(merge(merge(can_inputs, frames), alerts))
         }
         // If only have CAN messages, can iterate them as-is
-        None => Box::new(can_inputs),
+        None => Box::new(merge(can_inputs, alerts)),
     };
 
     // Sort the inputs and group them into segments
@@ -215,7 +218,7 @@ fn process_log(info: &LogInfo, data_dir: &Path) -> Result<(), Box<dyn Error>> {
         qlog.write_init_data(first_ts);
 
         if segment_idx == 0 {
-            qlog.write_car_params(first_ts, &info.car, &info.car_details);
+            qlog.write_car_params(first_ts, &info.car, &info.fingerprint);
             qlog.write_sentinel(first_ts, SentinelType::StartOfRoute);
         }
         qlog.write_sentinel(first_ts, SentinelType::StartOfSegment);
@@ -252,6 +255,9 @@ fn process_log(info: &LogInfo, data_dir: &Path) -> Result<(), Box<dyn Error>> {
                     }
 
                     frame_id += 1;
+                }
+                LogInput::Alert(ref alert) => {
+                    qlog.write_alert(alert);
                 }
             }
         }

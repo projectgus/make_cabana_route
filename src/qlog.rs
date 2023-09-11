@@ -1,4 +1,4 @@
-use crate::input::CANMessage;
+use crate::input::{Alert, AlertStatus, CANMessage};
 use crate::log_capnp;
 use crate::log_capnp::sentinel::SentinelType;
 use crate::Nanos;
@@ -101,5 +101,49 @@ impl QlogWriter {
             thumbnail.set_timestamp_eof(end_ts as u64);
             thumbnail.set_thumbnail(jpeg_data);
         });
+    }
+
+    // Insert an alert to appear on the video. Needs to be followed by
+    // write_alert_end() with a later timestamp to show when the alert is
+    // no longer visible.
+    pub fn write_alert(&mut self, alert: &Alert) {
+        self.write_event(alert.timestamp, |event| {
+            // Abusing this quite comprehensive event type to only inject alert text
+            let mut controls = event.init_controls_state();
+
+            // These parameters have to be set for the alert to show, but appear to be otherwise ignored by cabana
+            controls.set_alert_type("make_route");
+
+            if let Some(message) = &alert.message {
+                // Split the message at newline, if there is one
+                let (text1, text2) = message.split_once('\n').unwrap_or((message, ""));
+
+                controls.set_alert_text1(text1);
+                controls.set_alert_text2(text2);
+
+                controls.set_alert_size(log_capnp::controls_state::AlertSize::Mid);
+            } else {
+                controls.set_alert_size(log_capnp::controls_state::AlertSize::None);
+            }
+            controls.set_alert_status(alert.status.clone().into());
+        });
+    }
+
+    pub fn write_alert_end(&mut self, mono_time: Nanos) {
+        self.write_event(mono_time, |event| {
+            // Abusing this quite comprehensive event type to only inject alert text
+            let mut controls = event.init_controls_state();
+            controls.set_alert_size(log_capnp::controls_state::AlertSize::None);
+        });
+    }
+}
+
+impl From<AlertStatus> for log_capnp::controls_state::AlertStatus {
+    fn from(val: AlertStatus) -> Self {
+        match val {
+            AlertStatus::Normal => log_capnp::controls_state::AlertStatus::Normal,
+            AlertStatus::UserPrompt => log_capnp::controls_state::AlertStatus::UserPrompt,
+            AlertStatus::Critical => log_capnp::controls_state::AlertStatus::Critical,
+        }
     }
 }
