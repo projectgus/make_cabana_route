@@ -10,6 +10,9 @@ use make_cabana_route::video::{SegmentVideoEncoder, SourceVideo};
 use make_cabana_route::Nanos;
 use serde::Deserialize;
 use std::error::Error;
+use std::fs::{self, File, Permissions};
+use std::io::Write;
+use std::os::unix::prelude::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -289,6 +292,40 @@ fn process_log(info: &LogInfo, data_dir: &Path) -> Result<(), Box<dyn Error>> {
 
         qlog.write_sentinel(0, SentinelType::EndOfSegment);
     }
+
+    write_launch_script(info, data_dir)?;
+
+    Ok(())
+}
+
+fn write_launch_script(info: &LogInfo, data_dir: &Path) -> Result<(), Box<dyn Error>> {
+    /* Cabana doesn't have much of a feature for browsing local routes, so much a bunch of
+    launcher scripts based on the CSV log file name.
+
+    These assume 'cabana' on the PATH, and can take extra arguments like --dbc <path_to_dbc>
+    */
+    let script_name = format!("{}.sh", info.logfile.file_stem().unwrap().to_str().unwrap());
+    let script_path = data_dir.join(script_name);
+    let first_segment_dir = info.segment_dir_path(data_dir, 0);
+    let vipc_arg = match info.video {
+        Some(_) => "",
+        _ => "--no-vipc",
+    }; // If there's no video, Cabana won't open the route without this argument
+    {
+        let mut script = File::create(&script_path)?;
+        script.write_all(b"#!/bin/sh\n")?;
+        script.write_all(
+            format!(
+                "cabana {} --data_dir \"$(dirname $0)\" $@ {}\n",
+                vipc_arg,
+                first_segment_dir.file_name().unwrap().to_str().unwrap(),
+            )
+            .as_bytes(),
+        )?;
+    }
+
+    // Make executable
+    fs::set_permissions(&script_path, Permissions::from_mode(0o755))?;
 
     Ok(())
 }
