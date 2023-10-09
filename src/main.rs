@@ -35,6 +35,9 @@ struct Args {
     /// Path to generate Cabana data directory
     #[arg(short, long, default_value = "data_dir")]
     data_dir: PathBuf,
+
+    /// Optional filter. If set, only process logs containing this string.
+    filter_by: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -110,6 +113,29 @@ impl LogInfo {
         ));
         result
     }
+
+    fn log_matches(&self, filter_by: &str) -> bool {
+        /* Match log info on either the video file name (if any), log file name,
+
+        */
+        let log_match = self
+            .logfile
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains(filter_by);
+
+        let video_match = self
+            .video
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .and_then(|o| o.to_str())
+            .map(|s| s.contains(filter_by))
+            .unwrap_or(false);
+
+        log_match || video_match || self.fingerprint.contains(filter_by)
+    }
 }
 
 #[derive(Deserialize, PartialEq, Debug)]
@@ -146,6 +172,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     for info in &logs {
+        if let Some(ref filter_by) = args.filter_by {
+            if !info.log_matches(filter_by) {
+                continue;
+            }
+        }
+
         process_log(info, &args.data_dir)?;
     }
 
