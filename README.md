@@ -4,13 +4,15 @@ Utility that takes CSV formatted CAN log files and (optionally) accompanying vid
 
 ## Motivation
 
-The company [comma.ai](https://comma.ai/) has an open source CAN log viewer and reverse engineering tool called [Cabana](https://docs.comma.ai/tools/cabana/README.html). This is actually "[New Cabana](https://blog.comma.ai/090release/#new-cabana)" version, distributed on GitHub in their [openpilot repo](https://github.com/commaai/openpilot/tree/master/tools/cabana).
+The company [comma.ai](https://comma.ai/) has an open source CAN log viewer and reverse engineering tool called [Cabana](https://docs.comma.ai/tools/cabana/README.html). This is actually technically "[New Cabana](https://blog.comma.ai/090release/#new-cabana)", a Qt desktop application distributed on GitHub in their [openpilot repo](https://github.com/commaai/openpilot/tree/master/tools/cabana).
 
 Although Cabana is built to work with comma.ai's unique hardware and infrastructure, it has a very nice workflow for finding signals in CAN captures and creating DBC files to document them. One of its features is synchronising a video with the CAN log, which can make it easy to correlate events as they happen.
 
+![Screenshot of the Cabana UI](/screenshots/cabana-ui.webp)
+
 Normally, Cabana integrates directly with other comma.ai tools and their cloud "route" storage. The `make_cabana_route` tool is for when you have some random CAN log files and corresponding videos, and you want to load these into Cabana instead.
 
-For some more background of how I came to need this, see [this blog post](
+For background of how I personally came to want this, see [this blog post](https://projectgus.com//2023/10/kona-can-decoding/).
 
 ## IMPORTANT
 
