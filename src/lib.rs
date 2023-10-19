@@ -6,6 +6,8 @@ pub mod video;
 // TODO: Try using Duration for this and converting to nanos at time of encoding
 pub type Nanos = i64;
 
+// These files are part of comma.ai Cereal project and are
+// Copyright (c) 2020, Comma.ai, Inc., distributed under MIT License
 pub mod car_capnp {
     include!(concat!(env!("OUT_DIR"), "/car_capnp.rs"));
 }

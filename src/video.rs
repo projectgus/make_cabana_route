@@ -1,3 +1,5 @@
+// Copyright (c) 2023 Angus Gratton
+// SPDX-License-Identifier: GPL-2.0-or-later
 use std::path::Path;
 use std::rc::Rc;
 use std::{cell::RefCell, error::Error};
