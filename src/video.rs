@@ -11,6 +11,12 @@ const TARGET_FPS: u32 = 20;
 
 const JPEG_QUALITY: u8 = 80;
 
+// TODO: consider making these runtime configurable
+const JPEG_MAX_WIDTH: u32 = 640;
+/// Maximum width of an embedded JPEG thumbnail
+const VIDEO_MAX_WIDTH: u32 = 1280;
+/// Maximum width of the output video frame
+
 pub struct SegmentVideoEncoder {
     octx: format::context::Output,
     encoder: encoder::Video,
@@ -20,7 +26,12 @@ pub struct SegmentVideoEncoder {
 }
 
 impl SegmentVideoEncoder {
-    pub fn new(path: &Path, properties: &VideoProperties) -> Result<Self, Box<dyn Error>> {
+    pub fn new(
+        path: &Path,
+        properties: &VideoProperties,
+        dump_info: bool,
+    ) -> Result<Self, Box<dyn Error>> {
+        let properties = properties.scale_to_width(VIDEO_MAX_WIDTH);
         let mut octx = format::output(path).unwrap();
 
         let mut ost = octx.add_stream()?;
@@ -31,7 +42,6 @@ impl SegmentVideoEncoder {
 
         video.set_height(properties.height);
         video.set_width(properties.width);
-        video.set_aspect_ratio(properties.aspect_ratio.unwrap()); // TODO: unwrap?
         video.set_format(properties.format);
         video.set_frame_rate(Some(Rational::new(TARGET_FPS as i32, 1)));
         video.set_colorspace(properties.color_space);
@@ -40,19 +50,23 @@ impl SegmentVideoEncoder {
         // This time base seems to be required by HEVC, but unsure how it's supposed
         // to be set
         if let Some(time_base) = properties.time_base {
-            video.set_time_base(Some(time_base.invert())); //Rational::new(1, 90000));
+            video.set_time_base(Some(time_base.invert()));
         }
         video.set_flags(codec::Flags::GLOBAL_HEADER);
 
         eprintln!("Writing segment video to {}...", path.display());
 
         let mut x264_opts = Dictionary::new();
-        x264_opts.set("preset", "medium");
-        let encoder = video.open().expect("error opening HEVC encoder");
+        x264_opts.set("preset", "fast"); // default is medium. TODO: make configurable?
+        x264_opts.set("crf", "40"); // default is 28. lower == higher quality, bigger files.
+        let encoder = video
+            .open_with(x264_opts)
+            .expect("error opening HEVC encoder");
         ost.set_parameters(encoder.parameters());
 
-        //octx.set_metadata(metadata);
-        format::context::output::dump(&octx, 0, path.to_str());
+        if dump_info {
+            format::context::output::dump(&octx, 0, path.to_str());
+        }
         octx.write_header().unwrap();
 
         Ok(Self {
@@ -65,7 +79,6 @@ impl SegmentVideoEncoder {
     }
 
     pub fn send_frame(&mut self, frame: &SourceFrame) -> Result<(), Box<dyn Error>> {
-        //dbg!(self.frame_count);
         self.encoder.send_frame(&frame.frame)?;
         self.receive_packets()?;
         self.frame_count += 1;
@@ -77,9 +90,6 @@ impl SegmentVideoEncoder {
         while self.encoder.receive_packet(&mut encoded).is_ok() {
             self.pkt_count += 1;
             encoded.set_stream(self.video_stream_index);
-            //dbg!(encoded.pts(), encoded.dts());
-            //encoded.rescale_ts(self.decoder_time_base, self.encoder.time_base());
-            //dbg!(encoded.pts(), encoded.dts());
             encoded.write_interleaved(&mut self.octx).unwrap();
         }
 
@@ -90,7 +100,6 @@ impl SegmentVideoEncoder {
         self.encoder.send_eof().unwrap();
         self.receive_packets().unwrap();
         self.octx.write_trailer().unwrap();
-        dbg!(self.frame_count, self.pkt_count);
     }
 }
 
@@ -104,15 +113,29 @@ pub struct SourceVideo {
 //
 // Hence, make this little wrapper struct to copy around the key properties of
 // the source video and use for each segment.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct VideoProperties {
     height: u32,
     width: u32,
-    aspect_ratio: Option<Rational>,
     format: format::Pixel,
     time_base: Option<Rational>,
     color_space: ffmpeg::color::Space,
     color_range: ffmpeg::color::Range,
+}
+
+impl VideoProperties {
+    fn scale_to_width(&self, max_width: u32) -> VideoProperties {
+        /* Return VideoProperties with the maximum width, preserving aspect ratio.
+         */
+        let mut res = self.clone();
+
+        if self.width > max_width {
+            res.width = max_width;
+            res.height = max_width * self.height / self.width;
+        }
+
+        res
+    }
 }
 
 pub struct SourceFrame {
@@ -150,16 +173,17 @@ impl SourceVideo {
     // as more flexible
     pub fn video_frames(&mut self) -> SourceFrameIterator<'_> {
         let decoder = self.video_decoder();
+        let output_props = self.properties().scale_to_width(JPEG_MAX_WIDTH);
         let jpeg_scaler_context = scaling::Context::get(
             decoder.format(),
             decoder.width(),
             decoder.height(),
             format::Pixel::RGB24,
-            decoder.width(), // TODO: decide if we actually should scale down
-            decoder.height(),
+            output_props.width,
+            output_props.height,
             scaling::Flags::BILINEAR,
         )
-        .unwrap(); // TODO: better error handler here?
+        .expect("Failed to initialize JPEG scaler context");
         let jpeg_scaler_context = Rc::new(RefCell::new(jpeg_scaler_context));
         let packets = self.ictx.packets();
         SourceFrameIterator {
@@ -175,7 +199,6 @@ impl SourceVideo {
         VideoProperties {
             height: decoder.height(),
             width: decoder.width(),
-            aspect_ratio: Some(decoder.aspect_ratio()),
             format: decoder.format(),
             time_base: decoder.time_base(),
             color_space: decoder.color_space(),
@@ -229,24 +252,28 @@ impl<'a> Iterator for SourceFrameIterator<'a> {
 }
 
 impl SourceFrame {
-    pub fn encode_jpeg(&self) -> Result<Vec<u8>, Box<dyn Error>> {
-        let mut scaler = self.jpeg_scaler_context.try_borrow_mut()?;
+    pub fn encode_jpeg(&self) -> Vec<u8> {
+        let mut scaler = self.jpeg_scaler_context.try_borrow_mut().unwrap();
 
         let mut rgb_frame = frame::Video::empty();
-        scaler.run(&self.frame, &mut rgb_frame)?;
+        scaler
+            .run(&self.frame, &mut rgb_frame)
+            .expect("Failed to scale video frame for JPEG");
 
         let mut res = vec![];
 
         let encoder = jpeg_encoder::Encoder::new(&mut res, JPEG_QUALITY);
 
-        encoder.encode(
-            rgb_frame.data(0),
-            self.frame.width() as u16,
-            self.frame.height() as u16,
-            jpeg_encoder::ColorType::Rgb,
-        )?;
+        encoder
+            .encode(
+                rgb_frame.data(0),
+                rgb_frame.width() as u16,
+                rgb_frame.height() as u16,
+                jpeg_encoder::ColorType::Rgb,
+            )
+            .expect("Failed to encode JPEG frame");
 
-        Ok(res)
+        res
     }
 }
 

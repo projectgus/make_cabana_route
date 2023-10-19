@@ -231,6 +231,7 @@ fn process_log(info: &LogInfo, data_dir: &Path) -> Result<(), Box<dyn Error>> {
 
     // Sort the inputs and group them into segments
     let segments = inputs.group_by(|input| input.timestamp() / SEGMENT_NANOS);
+    let mut first_video = true;
 
     for (segment_idx, inputs) in &segments {
         let mut inputs = inputs.peekable();
@@ -248,7 +249,9 @@ fn process_log(info: &LogInfo, data_dir: &Path) -> Result<(), Box<dyn Error>> {
 
         let mut segment_video = if let Some(properties) = &video_properties {
             if !seg_video_path.try_exists()? {
-                Some(SegmentVideoEncoder::new(&seg_video_path, properties)?)
+                let enc = SegmentVideoEncoder::new(&seg_video_path, properties, first_video)?;
+                first_video = false;
+                Some(enc)
             } else {
                 // Don't encode new a segment video if the it already exists, as this is the slowest
                 // and most CPU intensive part
@@ -295,7 +298,7 @@ fn process_log(info: &LogInfo, data_dir: &Path) -> Result<(), Box<dyn Error>> {
 
                     qlog.write_frame_encode_idx(ts, segment_idx as i32, frame_id);
                     if ts - last_thumbnail > THUMBNAIL_INTERVAL {
-                        let jpeg = frame.encode_jpeg()?;
+                        let jpeg = frame.encode_jpeg();
                         qlog.write_thumbnail(ts, ts + THUMBNAIL_INTERVAL, frame_id, &jpeg);
                         last_thumbnail = ts;
                     }
