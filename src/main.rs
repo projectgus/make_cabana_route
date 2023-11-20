@@ -1,5 +1,6 @@
 // Copyright (c) 2023 Angus Gratton
 // SPDX-License-Identifier: GPL-2.0-or-later
+use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Local};
 use clap::Parser;
 use itertools::{merge, Itertools};
@@ -11,7 +12,6 @@ use make_cabana_route::qlog::QlogWriter;
 use make_cabana_route::video::{SegmentVideoEncoder, SourceVideo};
 use make_cabana_route::Nanos;
 use serde::Deserialize;
-use std::error::Error;
 use std::fs::{self, File, Permissions};
 use std::io::Write;
 use std::os::unix::prelude::PermissionsExt;
@@ -54,21 +54,26 @@ struct LogInfo {
 
 impl LogInfo {
     // Convert relative paths to absolute ones, return an error if paths don't exist
-    fn canonicalise_paths(&mut self, relative_to: &Path) -> Result<(), Box<dyn Error>> {
+    fn canonicalise_paths(&mut self, relative_to: &Path) -> Result<()> {
         let relative_to = relative_to
-            .canonicalize()?
+            .canonicalize()
+            .with_context(|| format!("Failed to canonicalize path {:?}", relative_to))?
             .parent()
             .expect("relative_to file should always have a parent directory.")
             .to_path_buf();
         self.logfile = relative_to.join(&self.logfile);
 
         // Check logfile exists
-        self.logfile.metadata()?;
+        self.logfile
+            .metadata()
+            .with_context(|| format!("Failed to read log file metadata: {:?}", self.logfile))?;
 
         if let Some(video) = &self.video {
             let video = relative_to.join(video);
             // Check video exists
-            video.metadata()?;
+            video
+                .metadata()
+                .with_context(|| format!("Failed to read video metadata: {:?}", video))?;
             self.video = Some(video);
         }
 
@@ -87,7 +92,7 @@ impl LogInfo {
                 .metadata()
                 .expect("video file should already exist")
                 .modified()
-                .unwrap()
+                .expect("video file checked already")
                 .into()
         } else {
             self.logfile
@@ -160,17 +165,19 @@ impl LogSyncInfo {
     }
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
-    ffmpeg::init().unwrap();
+fn main() -> Result<()> {
+    ffmpeg::init().expect("Failed to initialise ffmpeg");
 
     let args = Args::parse();
 
-    let f = std::fs::File::open(&args.yaml_path)?;
-    let mut logs: Vec<LogInfo> = serde_yaml::from_reader(f)?;
+    let f = std::fs::File::open(&args.yaml_path)
+        .with_context(|| format!("Failed to read file at path {:?}", &args.yaml_path))?;
+    let mut logs: Vec<LogInfo> = serde_yaml::from_reader(f)
+        .with_context(|| format!("Failed to read YAML data from {:?}", args.yaml_path))?;
 
     // Fix up paths, this will also error out early if any files are not found
     for info in &mut logs {
-        info.canonicalise_paths(&args.yaml_path)?;
+        info.canonicalise_paths(&args.yaml_path)?
     }
 
     for info in &logs {
@@ -186,9 +193,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn process_log(info: &LogInfo, data_dir: &Path) -> Result<(), Box<dyn Error>> {
+fn process_log(info: &LogInfo, data_dir: &Path) -> Result<()> {
     if info.video.is_some() && info.sync.is_none() {
-        panic!("Video {0:?} requires a sync section to match", info.video); // TODO: better error handling!
+        bail!("Video {0:?} requires a sync section to match", info.video);
     }
 
     let can_ts_offs = info.sync.as_ref().map(|s| s.can_ts_offs());
@@ -207,7 +214,7 @@ fn process_log(info: &LogInfo, data_dir: &Path) -> Result<(), Box<dyn Error>> {
     if let Some(video_path) = &info.video {
         eprintln!("Opening video {video_path:?}...");
         let sv = SourceVideo::new(video_path)?;
-        video_properties = Some(sv.properties());
+        video_properties = Some(sv.properties()?);
         source_video = Some(sv);
     };
 
@@ -217,7 +224,7 @@ fn process_log(info: &LogInfo, data_dir: &Path) -> Result<(), Box<dyn Error>> {
         Some(source_video) => {
             // If we have video and CAN message inputs, merge them together
             // keeping the output sorted by timestamp
-            let frames = source_video.video_frames().map(LogInput::Frame);
+            let frames = source_video.video_frames()?.map(LogInput::Frame);
             Box::new(merge(merge(can_inputs, frames), alerts))
         }
         // If only have CAN messages, can iterate them as-is
@@ -227,8 +234,7 @@ fn process_log(info: &LogInfo, data_dir: &Path) -> Result<(), Box<dyn Error>> {
     let mut inputs = inputs.peekable();
 
     if inputs.peek().map(|i| i.timestamp()).unwrap_or(0) > SEGMENT_NANOS {
-        panic!("Segments should start from 0, the timestamp offset is set incorrectly");
-        // TODO: better error handling
+        bail!("Segments should start from 0, the timestamp offset is set incorrectly");
     }
 
     // Sort the inputs and group them into segments
@@ -317,7 +323,7 @@ fn process_log(info: &LogInfo, data_dir: &Path) -> Result<(), Box<dyn Error>> {
         qlog.write_can(&can_msgs);
 
         if let Some(encode) = segment_video {
-            encode.finish();
+            encode.finish()?;
 
             if frame_id == 0 {
                 // No frames actually got written for this segment, so get rid of the
@@ -335,7 +341,7 @@ fn process_log(info: &LogInfo, data_dir: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn write_launch_script(info: &LogInfo, data_dir: &Path) -> Result<(), Box<dyn Error>> {
+fn write_launch_script(info: &LogInfo, data_dir: &Path) -> Result<()> {
     /* Cabana doesn't have much of a feature for browsing local routes, so much a bunch of
     launcher scripts based on the CSV log file name.
 

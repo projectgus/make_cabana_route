@@ -1,13 +1,13 @@
 // Copyright (c) 2023 Angus Gratton
 // SPDX-License-Identifier: GPL-2.0-or-later
-use std::path::Path;
-use std::rc::Rc;
-use std::{cell::RefCell, error::Error};
-
+use anyhow::{Context, Result};
 use ffmpeg::{
     codec, decoder, encoder, format, frame, media, software::scaling, Dictionary, Packet, Rational,
 };
 use jpeg_encoder;
+use std::cell::RefCell;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 const TARGET_FPS: u32 = 20;
 
@@ -28,19 +28,19 @@ pub struct SegmentVideoEncoder {
 }
 
 impl SegmentVideoEncoder {
-    pub fn new(
-        path: &Path,
-        properties: &VideoProperties,
-        dump_info: bool,
-    ) -> Result<Self, Box<dyn Error>> {
+    pub fn new(path: &Path, properties: &VideoProperties, dump_info: bool) -> Result<Self> {
         let properties = properties.scale_to_width(VIDEO_MAX_WIDTH);
-        let mut octx = format::output(path).unwrap();
+        let mut octx = format::output(path)
+            .with_context(|| format!("Failed to create output context for {:?}", path))?;
 
         let mut ost = octx.add_stream()?;
         let video_stream_index = ost.index();
 
-        let codec = encoder::find(codec::Id::HEVC).unwrap();
-        let mut video = codec::Encoder::new(codec)?.video()?;
+        let codec = encoder::find(codec::Id::HEVC).context("Failed to find HEV codec")?;
+        let mut video = codec::Encoder::new(codec)
+            .context("Failed to instantiate HEVC Codec")?
+            .video()
+            .context("Failed to get video from Codec")?;
 
         video.set_height(properties.height);
         video.set_width(properties.width);
@@ -69,7 +69,7 @@ impl SegmentVideoEncoder {
         if dump_info {
             format::context::output::dump(&octx, 0, path.to_str());
         }
-        octx.write_header().unwrap();
+        octx.write_header().context("Failed to write HEVC header")?;
 
         Ok(Self {
             octx,
@@ -80,32 +80,42 @@ impl SegmentVideoEncoder {
         })
     }
 
-    pub fn send_frame(&mut self, frame: &SourceFrame) -> Result<(), Box<dyn Error>> {
-        self.encoder.send_frame(&frame.frame)?;
-        self.receive_packets()?;
+    pub fn send_frame(&mut self, frame: &SourceFrame) -> Result<()> {
+        self.encoder
+            .send_frame(&frame.frame)
+            .context("Failed to send frame to encoder")?;
+        self.receive_packets()
+            .context("Failed to read input video packets")?;
         self.frame_count += 1;
         Ok(())
     }
 
-    fn receive_packets(&mut self) -> Result<(), Box<dyn Error>> {
+    fn receive_packets(&mut self) -> Result<()> {
         let mut encoded = Packet::empty();
         while self.encoder.receive_packet(&mut encoded).is_ok() {
             self.pkt_count += 1;
             encoded.set_stream(self.video_stream_index);
-            encoded.write_interleaved(&mut self.octx).unwrap();
+            encoded
+                .write_interleaved(&mut self.octx)
+                .context("failed to write to encoder")?;
         }
 
         Ok(())
     }
 
-    pub fn finish(mut self) {
-        self.encoder.send_eof().unwrap();
-        self.receive_packets().unwrap();
-        self.octx.write_trailer().unwrap();
+    pub fn finish(mut self) -> Result<()> {
+        self.encoder.send_eof().context("Failed to send EOF")?;
+        self.receive_packets()
+            .context("Failed to receive final packets")?;
+        self.octx
+            .write_trailer()
+            .context("Failed to write trailer")?;
+        Ok(())
     }
 }
 
 pub struct SourceVideo {
+    video_file: PathBuf,
     ictx: format::context::Input,
     video_stream_index: usize,
 }
@@ -147,35 +157,42 @@ pub struct SourceFrame {
 }
 
 impl SourceVideo {
-    pub fn new(video_file: &Path) -> Result<Self, Box<dyn Error>> {
-        let ictx = format::input(video_file)?;
+    pub fn new(video_file: &Path) -> Result<Self> {
+        let ictx = format::input(video_file)
+            .with_context(|| format!("Failed to open video file {:?}", video_file))?;
         let input = ictx
             .streams()
             .best(media::Type::Video)
-            .ok_or(ffmpeg::Error::StreamNotFound)?;
+            .ok_or(ffmpeg::Error::StreamNotFound)
+            .with_context(|| format!("Video file {:?} contained no video streams", video_file))?;
         let video_stream_index = input.index();
 
         Ok(Self {
             ictx,
             video_stream_index,
+            video_file: video_file.to_path_buf(),
         })
     }
 
-    pub fn video_decoder(&self) -> decoder::Video {
-        let input = self
-            .ictx
+    pub fn video_decoder(&self) -> Result<decoder::Video> {
+        self.ictx
             .streams()
             .best(media::Type::Video)
             .ok_or(ffmpeg::Error::StreamNotFound)
-            .unwrap(); // TODO: error handling!
-        input.decoder().unwrap().open().unwrap().video().unwrap() // TODO: error handling!
+            .with_context(|| format!("Input video {:?} has no video stream", self.video_file))?
+            .decoder()
+            .with_context(|| format!("Failed to create decoder for {:?}", self.video_file))?
+            .open()
+            .with_context(|| format!("Failed to open video decoder for {:?}", self.video_file))?
+            .video()
+            .with_context(|| format!("Failed to access video for {:?}", self.video_file))
     }
 
     // Didn't have any luck implementing IntoIter for this, but this is kind of better
     // as more flexible
-    pub fn video_frames(&mut self) -> SourceFrameIterator<'_> {
-        let decoder = self.video_decoder();
-        let output_props = self.properties().scale_to_width(JPEG_MAX_WIDTH);
+    pub fn video_frames(&mut self) -> Result<SourceFrameIterator<'_>> {
+        let decoder = self.video_decoder()?;
+        let output_props = self.properties()?.scale_to_width(JPEG_MAX_WIDTH);
         let jpeg_scaler_context = scaling::Context::get(
             decoder.format(),
             decoder.width(),
@@ -188,24 +205,25 @@ impl SourceVideo {
         .expect("Failed to initialize JPEG scaler context");
         let jpeg_scaler_context = Rc::new(RefCell::new(jpeg_scaler_context));
         let packets = self.ictx.packets();
-        SourceFrameIterator {
+        Ok(SourceFrameIterator {
             packets,
             decoder,
             video_stream_index: self.video_stream_index,
             jpeg_scaler_context,
-        }
+            next_frame_ts: 0,
+        })
     }
 
-    pub fn properties(&self) -> VideoProperties {
-        let decoder = self.video_decoder();
-        VideoProperties {
+    pub fn properties(&self) -> Result<VideoProperties> {
+        let decoder = self.video_decoder()?;
+        Ok(VideoProperties {
             height: decoder.height(),
             width: decoder.width(),
             format: decoder.format(),
             time_base: decoder.time_base(),
             color_space: decoder.color_space(),
             color_range: decoder.color_range(),
-        }
+        })
     }
 }
 
@@ -221,16 +239,18 @@ impl<'a> Iterator for SourceFrameIterator<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut receive_frames = |decoder: &mut decoder::Video| -> Option<Self::Item> {
-            let time_base = decoder.time_base().unwrap(); // TODO
+            let time_base = decoder.time_base().expect("Video must have time base");
             let timebase_ns =
                 (time_base.numerator() as i64 * 1_000_000_000) / time_base.denominator() as i64;
             let jpeg_scaler_context = self.jpeg_scaler_context.clone();
 
             let mut frame = frame::Video::empty();
             for res in self.packets.by_ref() {
-                let (stream, packet) = res.unwrap(); // TODO: handle error properly
+                let (stream, packet) = res.expect("Failed to iterate frames");
                 if stream.index() == self.video_stream_index {
-                    decoder.send_packet(&packet).unwrap(); // TODO: handle error properly
+                    decoder
+                        .send_packet(&packet)
+                        .expect("Failed to decode frames");
                     if decoder.receive_frame(&mut frame).is_ok() {
                         let ts_ns = frame.pts().unwrap() * timebase_ns;
                         return Some(Self::Item {

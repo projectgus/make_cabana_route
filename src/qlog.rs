@@ -4,6 +4,7 @@ use crate::input::{Alert, AlertStatus, CANMessage};
 use crate::log_capnp;
 use crate::log_capnp::sentinel::SentinelType;
 use crate::Nanos;
+use anyhow::{Context, Result};
 use bzip2::write::BzEncoder;
 use bzip2::Compression;
 use std::fs::File;
@@ -16,8 +17,10 @@ pub struct QlogWriter {
 }
 
 impl QlogWriter {
-    pub fn new(path: PathBuf) -> Result<Self, std::io::Error> {
-        let writer = BzEncoder::new(File::create(path)?, Compression::new(6));
+    pub fn new(path: PathBuf) -> Result<Self> {
+        let f =
+            File::create(&path).with_context(|| format!("Failed to create file {:?}", &path))?;
+        let writer = BzEncoder::new(f, Compression::new(6));
         Ok(Self {
             writer,
             last_timestamp: 0,

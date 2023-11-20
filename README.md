@@ -127,4 +127,4 @@ Additional arguments (like `--dbc` here) are passed to cabana as well. It's not 
 ## Known Limitations
 
 * Video transcoding is CPU only. This boils down to two things: the libavcodec API for hardware-assisted transcoding is relatively complex (as it's a complex concept), and [rust-ffmpeg](https://github.com/meh/rust-ffmpeg) does not appear to fully support it.
-* Error checking and propagation is pretty rubbish. In different places the program arbitrarily may panic without context on failure, or may return a useless `Box<dyn Error>` and *then* panic with even less context. There are a lot of TODOs in the code to improve this, but I haven't been back to tidy it up...
+

@@ -1,8 +1,8 @@
 // Copyright (c) 2023 Angus Gratton
 // SPDX-License-Identifier: GPL-2.0-or-later
-use std::error::Error;
 use std::path::Path;
 
+use anyhow::{anyhow, Context, Result};
 use itertools::Itertools;
 use serde::Deserialize;
 
@@ -81,20 +81,26 @@ impl PartialOrd for CANMessage {
 }
 
 impl CANMessage {
-    // TODO: improve error propagation
-    pub fn parse_from(record: &csv::StringRecord, ts_offs: Nanos) -> Result<Self, Box<dyn Error>> {
+    pub fn parse_from(record: &csv::StringRecord, ts_offs: Nanos) -> Result<Self> {
         // in this format, each record has a variable number of fields
         // and we want to concatenate the variable data fields
         let mut fields = record.iter();
 
-        let ts_us: i64 = fields.next().unwrap().parse()?;
-        let can_id = u32::from_str_radix(fields.next().unwrap(), 16)?;
-        let is_extended_id = fields.next().unwrap() == "true";
-        let bus_no = fields.next().unwrap().parse()?;
+        let ts_us: i64 = fields.next().ok_or(anyhow!("Missing ts field"))?.parse()?;
+        let can_id =
+            u32::from_str_radix(fields.next().ok_or(anyhow!("Missing can id field"))?, 16)?;
+        let is_extended_id = fields
+            .next()
+            .ok_or(anyhow!("Missing is_extended_id field"))?
+            == "true";
+        let bus_no = fields.next().ok_or(anyhow!("Missing bus field"))?.parse()?;
         fields.next(); // dlen field, can skip this one
 
         // collect the remaining variable number of data fields d1..d8
-        let data = fields.map(|d| u8::from_str_radix(d, 16)).try_collect()?;
+        let data = fields
+            .map(|d| u8::from_str_radix(d, 16))
+            .try_collect()
+            .context("Error parsing CSV data field")?;
 
         Ok(CANMessage {
             timestamp: (ts_us * 1000) as Nanos - ts_offs,
@@ -113,12 +119,13 @@ impl CANMessage {
 pub fn read_can_messages(
     csv_log_path: &Path,
     can_ts_offs: Option<Nanos>,
-) -> Result<Vec<CANMessage>, Box<dyn Error>> {
+) -> Result<Vec<CANMessage>> {
     eprintln!("Opening CAN log {:?}...", csv_log_path);
 
     let mut rdr = csv::ReaderBuilder::new()
         .flexible(true)
-        .from_path(csv_log_path)?;
+        .from_path(csv_log_path)
+        .with_context(|| format!("Failed to read CSV file {:?}", csv_log_path))?;
 
     let mut records = rdr.records().peekable();
 
@@ -132,19 +139,26 @@ pub fn read_can_messages(
         _ => 0,
     });
 
-    Ok(records
-        .map(|r| match r {
+    let mut result = records
+        .map(|rec| match rec {
             Ok(r) => CANMessage::parse_from(&r, can_ts_offs),
-            Err(e) => panic!("Error reading CSV file: {}", e), // TODO: error handling!
+            Err(e) => Err(anyhow!(
+                "Invalid CSV record in file {:?}: {}",
+                csv_log_path,
+                e
+            )),
         })
-        .map(|m| m.unwrap()) // TODO: more error handling!
         // TODO: For now dropping any CAN timestamp that comes before the video
         // started. Could conceivably adjust the start earlier instead and have empty video
-        .filter(|m| m.timestamp >= 0)
-        // When the log contains >1 bus of data, the messages can be slightly out
-        // of order
-        .sorted()
-        .collect())
+        .filter(|r| match r {
+            Ok(m) => m.timestamp >= 0,
+            _ => true,
+        })
+        .collect::<Result<Vec<CANMessage>>>()?;
+    // When the log contains >1 bus of data, the messages can be slightly out
+    // of order
+    result.sort();
+    Ok(result)
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
