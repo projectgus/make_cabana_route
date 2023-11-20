@@ -11,6 +11,8 @@ use std::rc::Rc;
 
 const TARGET_FPS: u32 = 20;
 
+const TARGET_FRAME_NS: i64 = 1_000_000_000i64 / TARGET_FPS as i64;
+
 const JPEG_QUALITY: u8 = 80;
 
 // TODO: consider making these runtime configurable
@@ -232,6 +234,7 @@ pub struct SourceFrameIterator<'a> {
     packets: format::context::input::PacketIter<'a>,
     video_stream_index: usize,
     jpeg_scaler_context: Rc<RefCell<scaling::Context>>,
+    next_frame_ts: i64,
 }
 
 impl<'a> Iterator for SourceFrameIterator<'a> {
@@ -253,11 +256,19 @@ impl<'a> Iterator for SourceFrameIterator<'a> {
                         .expect("Failed to decode frames");
                     if decoder.receive_frame(&mut frame).is_ok() {
                         let ts_ns = frame.pts().unwrap() * timebase_ns;
-                        return Some(Self::Item {
-                            frame,
-                            ts_ns,
-                            jpeg_scaler_context,
-                        });
+                        // Drop frames as needed to meet the target FPS rate
+                        if ts_ns >= self.next_frame_ts + TARGET_FRAME_NS {
+                            self.next_frame_ts = if self.next_frame_ts == 0 {
+                                ts_ns + TARGET_FRAME_NS
+                            } else {
+                                self.next_frame_ts + TARGET_FRAME_NS
+                            };
+                            return Some(Self::Item {
+                                frame,
+                                ts_ns,
+                                jpeg_scaler_context,
+                            });
+                        }
                     }
                 }
             }
