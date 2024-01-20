@@ -1,6 +1,7 @@
 // Copyright (c) 2023 Angus Gratton
 // SPDX-License-Identifier: GPL-2.0-or-later
 use anyhow::{Context, Result};
+use ffmpeg::frame::Video;
 use ffmpeg::{
     codec, decoder, encoder, format, frame, media, software::scaling, Dictionary, Packet, Rational,
 };
@@ -23,6 +24,7 @@ const VIDEO_MAX_WIDTH: u32 = 1280;
 
 pub struct SegmentVideoEncoder {
     octx: format::context::Output,
+    scaler: Option<scaling::Context>,
     encoder: encoder::Video,
     video_stream_index: usize,
     frame_count: usize,
@@ -31,7 +33,6 @@ pub struct SegmentVideoEncoder {
 
 impl SegmentVideoEncoder {
     pub fn new(path: &Path, properties: &VideoProperties, dump_info: bool) -> Result<Self> {
-        let properties = properties.scale_to_width(VIDEO_MAX_WIDTH);
         let mut octx = format::output(path)
             .with_context(|| format!("Failed to create output context for {:?}", path))?;
 
@@ -44,9 +45,35 @@ impl SegmentVideoEncoder {
             .video()
             .context("Failed to get video from Codec")?;
 
-        video.set_height(properties.height);
-        video.set_width(properties.width);
-        video.set_format(properties.format);
+        let scaler = if properties.width > VIDEO_MAX_WIDTH {
+            // Scale the output video
+            let scaled = properties.scale_to_width(VIDEO_MAX_WIDTH);
+            eprintln!(
+                "Scaling from {}x{} to {}x{}",
+                properties.width, properties.height, scaled.width, scaled.height
+            );
+
+            video.set_height(scaled.height);
+            video.set_width(scaled.width);
+            video.set_format(scaled.format);
+
+            Some(scaling::Context::get(
+                properties.format,
+                properties.width,
+                properties.height,
+                scaled.format,
+                scaled.width,
+                scaled.height,
+                scaling::Flags::BILINEAR,
+            )?)
+        } else {
+            // Don't need to scale
+            video.set_height(properties.height);
+            video.set_width(properties.width);
+            video.set_format(properties.format);
+            None
+        };
+
         video.set_frame_rate(Some(Rational::new(TARGET_FPS as i32, 1)));
         video.set_colorspace(properties.color_space);
         video.set_color_range(properties.color_range);
@@ -75,6 +102,7 @@ impl SegmentVideoEncoder {
 
         Ok(Self {
             octx,
+            scaler,
             encoder,
             video_stream_index,
             frame_count: 0,
@@ -83,8 +111,18 @@ impl SegmentVideoEncoder {
     }
 
     pub fn send_frame(&mut self, frame: &SourceFrame) -> Result<()> {
+        let mut scaled_frame = Video::empty();
+        let iframe = {
+            if let Some(scaler) = &mut self.scaler {
+                scaler.run(&frame.frame, &mut scaled_frame)?;
+                &scaled_frame
+            } else {
+                &frame.frame
+            }
+        };
+
         self.encoder
-            .send_frame(&frame.frame)
+            .send_frame(&iframe)
             .context("Failed to send frame to encoder")?;
         self.receive_packets()
             .context("Failed to read input video packets")?;
