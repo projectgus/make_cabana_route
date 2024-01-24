@@ -1,7 +1,9 @@
 // Copyright (c) 2023 Angus Gratton
 // SPDX-License-Identifier: GPL-2.0-or-later
 use anyhow::{Context, Result};
-use ffmpeg::frame::Video;
+use ffmpeg::ffi::AVPixelFormat;
+use ffmpeg::filter;
+use ffmpeg::format::Pixel;
 use ffmpeg::{
     codec, decoder, encoder, format, frame, media, software::scaling, Dictionary, Packet, Rational,
 };
@@ -22,9 +24,12 @@ const JPEG_MAX_WIDTH: u32 = 640;
 const VIDEO_MAX_WIDTH: u32 = 1280;
 /// Maximum width of the output video frame
 
+struct FilterGraph {
+    graph: ffmpeg::filter::graph::Graph,
+}
+
 pub struct SegmentVideoEncoder {
     octx: format::context::Output,
-    scaler: Option<scaling::Context>,
     encoder: encoder::Video,
     video_stream_index: usize,
     frame_count: usize,
@@ -45,35 +50,9 @@ impl SegmentVideoEncoder {
             .video()
             .context("Failed to get video from Codec")?;
 
-        let scaler = if properties.width > VIDEO_MAX_WIDTH {
-            // Scale the output video
-            let scaled = properties.scale_to_width(VIDEO_MAX_WIDTH);
-            eprintln!(
-                "Scaling from {}x{} to {}x{}",
-                properties.width, properties.height, scaled.width, scaled.height
-            );
-
-            video.set_height(scaled.height);
-            video.set_width(scaled.width);
-            video.set_format(scaled.format);
-
-            Some(scaling::Context::get(
-                properties.format,
-                properties.width,
-                properties.height,
-                scaled.format,
-                scaled.width,
-                scaled.height,
-                scaling::Flags::BILINEAR,
-            )?)
-        } else {
-            // Don't need to scale
-            video.set_height(properties.height);
-            video.set_width(properties.width);
-            video.set_format(properties.format);
-            None
-        };
-
+        video.set_width(properties.out_width);
+        video.set_height(properties.out_height);
+        video.set_format(properties.format);
         video.set_frame_rate(Some(Rational::new(TARGET_FPS as i32, 1)));
         video.set_colorspace(properties.color_space);
         video.set_color_range(properties.color_range);
@@ -102,7 +81,6 @@ impl SegmentVideoEncoder {
 
         Ok(Self {
             octx,
-            scaler,
             encoder,
             video_stream_index,
             frame_count: 0,
@@ -111,18 +89,8 @@ impl SegmentVideoEncoder {
     }
 
     pub fn send_frame(&mut self, frame: &SourceFrame) -> Result<()> {
-        let mut scaled_frame = Video::empty();
-        let iframe = {
-            if let Some(scaler) = &mut self.scaler {
-                scaler.run(&frame.frame, &mut scaled_frame)?;
-                &scaled_frame
-            } else {
-                &frame.frame
-            }
-        };
-
         self.encoder
-            .send_frame(&iframe)
+            .send_frame(&frame.frame)
             .context("Failed to send frame to encoder")?;
         self.receive_packets()
             .context("Failed to read input video packets")?;
@@ -167,27 +135,12 @@ pub struct SourceVideo {
 // the source video and use for each segment.
 #[derive(Clone, Debug)]
 pub struct VideoProperties {
-    height: u32,
-    width: u32,
+    out_height: u32,
+    out_width: u32,
     format: format::Pixel,
     time_base: Option<Rational>,
     color_space: ffmpeg::color::Space,
     color_range: ffmpeg::color::Range,
-}
-
-impl VideoProperties {
-    fn scale_to_width(&self, max_width: u32) -> VideoProperties {
-        /* Return VideoProperties with the maximum width, preserving aspect ratio.
-         */
-        let mut res = self.clone();
-
-        if self.width > max_width {
-            res.width = max_width;
-            res.height = max_width * self.height / self.width;
-        }
-
-        res
-    }
 }
 
 pub struct SourceFrame {
@@ -231,34 +184,68 @@ impl SourceVideo {
     // Didn't have any luck implementing IntoIter for this, but this is kind of better
     // as more flexible
     pub fn video_frames(&mut self) -> Result<SourceFrameIterator<'_>> {
+        let mut filter_spec = format!("scale={}:-1", VIDEO_MAX_WIDTH);
+
+        let rotate = self.display_rotation()?;
+        if rotate != 0 {
+            filter_spec = format!("{},rotate={}*PI/180", filter_spec, rotate);
+        }
+        eprintln!("Filter spec: {}", filter_spec);
+
+        let props = self.properties()?;
         let decoder = self.video_decoder()?;
-        let output_props = self.properties()?.scale_to_width(JPEG_MAX_WIDTH);
+        let filter_graph = FilterGraph::new(&decoder, &filter_spec)?;
+        let packets = self.ictx.packets();
+
+        // JPEG scaler context takes output of the filter graph pipeline as
+        // input. Use a simple swscaler context rather than a more complex
+        // av_filter pipeline.
         let jpeg_scaler_context = scaling::Context::get(
             decoder.format(),
-            decoder.width(),
-            decoder.height(),
+            props.out_width,
+            props.out_height,
             format::Pixel::RGB24,
-            output_props.width,
-            output_props.height,
+            JPEG_MAX_WIDTH,
+            JPEG_MAX_WIDTH * props.out_height / props.out_width,
             scaling::Flags::BILINEAR,
         )
         .expect("Failed to initialize JPEG scaler context");
         let jpeg_scaler_context = Rc::new(RefCell::new(jpeg_scaler_context));
-        let packets = self.ictx.packets();
+
         Ok(SourceFrameIterator {
             packets,
             decoder,
             video_stream_index: self.video_stream_index,
             jpeg_scaler_context,
             next_frame_ts: 0,
+            filter_graph,
         })
+    }
+
+    fn display_rotation(&self) -> Result<i32> {
+        let stream = self
+            .ictx
+            .streams()
+            .best(media::Type::Video)
+            .ok_or(ffmpeg::Error::StreamNotFound)?;
+        Ok(stream.display_rotation() as i32)
     }
 
     pub fn properties(&self) -> Result<VideoProperties> {
         let decoder = self.video_decoder()?;
+
+        let in_width = decoder.width();
+        let in_height = decoder.height();
+        let out_width = if in_width > VIDEO_MAX_WIDTH {
+            VIDEO_MAX_WIDTH
+        } else {
+            in_height
+        };
+        let out_height = out_width * in_height / in_width;
+
         Ok(VideoProperties {
-            height: decoder.height(),
-            width: decoder.width(),
+            out_width,
+            out_height,
             format: decoder.format(),
             time_base: decoder.time_base(),
             color_space: decoder.color_space(),
@@ -271,6 +258,7 @@ pub struct SourceFrameIterator<'a> {
     decoder: decoder::Video,
     packets: format::context::input::PacketIter<'a>,
     video_stream_index: usize,
+    filter_graph: FilterGraph,
     jpeg_scaler_context: Rc<RefCell<scaling::Context>>,
     next_frame_ts: i64,
 }
@@ -301,6 +289,9 @@ impl<'a> Iterator for SourceFrameIterator<'a> {
                             } else {
                                 self.next_frame_ts + TARGET_FRAME_NS
                             };
+                            self.filter_graph
+                                .filter_frame(&mut frame)
+                                .expect("Failed to filter frame");
                             return Some(Self::Item {
                                 frame,
                                 ts_ns,
@@ -355,3 +346,64 @@ impl PartialEq for SourceFrame {
 }
 
 impl Eq for SourceFrame {}
+
+impl FilterGraph {
+    const IN: &str = "in";
+    const OUT: &str = "out";
+
+    fn new(decoder: &decoder::Video, filter_spec: &str) -> Result<Self> {
+        let buffer_src = filter::find("buffer").context("can't find src")?;
+        let buffer_sink = filter::find("buffersink").context("can't find sink")?;
+        let mut graph = filter::graph::Graph::new();
+
+        let time_base = decoder.time_base().unwrap();
+        let pixel_aspect = decoder.aspect_ratio();
+
+        let src_args = format!(
+            "video_size={}x{}:pix_fmt={}:time_base={}/{}:pixel_aspect={}/{}",
+            decoder.width(),
+            decoder.height(),
+            <Pixel as Into<AVPixelFormat>>::into(decoder.format()) as i32,
+            time_base.numerator(),
+            time_base.denominator(),
+            pixel_aspect.numerator(),
+            pixel_aspect.denominator(),
+        );
+
+        // Note: inefficient that we add here and then have to call get() for each
+        // frame. However, otherwise FilterGraph has to become a self-referential struct.
+        let mut buffer_src_ctx = graph
+            .add(&buffer_src, Self::IN, &src_args)
+            .with_context(|| format!("Failed to add src {}", src_args))?;
+        buffer_src_ctx.set_pixel_format(decoder.format());
+
+        let mut buffer_sink_ctx = graph
+            .add(&buffer_sink, Self::OUT, "")
+            .context("Failed to add sink")?;
+        buffer_sink_ctx.set_pixel_format(decoder.format());
+
+        // Link up start and end (unclear why output is the IN here).
+        graph
+            .output(Self::IN, 0)
+            .context("Failed to allocate output")?
+            .input(Self::OUT, 0)
+            .context("Failed to allocate input")?
+            .parse(filter_spec)
+            .context("Failed to parse filter spec")?;
+        graph.validate().context("Filter graph not valid")?;
+
+        Ok(FilterGraph { graph })
+    }
+
+    fn filter_frame(&mut self, frame: &mut frame::Video) -> Result<()> {
+        let mut src_ctx = self.graph.get(Self::IN).unwrap();
+        let mut src = src_ctx.source();
+        src.add(&frame.0).context("Failed to add to source")?;
+
+        let mut sink_ctx = self.graph.get(Self::OUT).unwrap();
+        let mut sink = sink_ctx.sink();
+        sink.frame(&mut frame.0)
+            .context("Failed to read from sink")?;
+        Ok(())
+    }
+}
