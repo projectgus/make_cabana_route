@@ -38,6 +38,10 @@ struct Args {
     #[arg(short, long, default_value = "data_dir")]
     data_dir: PathBuf,
 
+    /// Overwrite existing video files if found
+    #[arg(short, long)]
+    overwrite: bool,
+
     /// Optional filter. If set, only process logs containing this string.
     filter_by: Option<String>,
 }
@@ -187,13 +191,13 @@ fn main() -> Result<()> {
             }
         }
 
-        process_log(info, &args.data_dir)?;
+        process_log(info, &args.data_dir, args.overwrite)?;
     }
 
     Ok(())
 }
 
-fn process_log(info: &LogInfo, data_dir: &Path) -> Result<()> {
+fn process_log(info: &LogInfo, data_dir: &Path, overwrite_videos: bool) -> Result<()> {
     if info.video.is_some() && info.sync.is_none() {
         bail!("Video {0:?} requires a sync section to match", info.video);
     }
@@ -256,13 +260,13 @@ fn process_log(info: &LogInfo, data_dir: &Path) -> Result<()> {
         let seg_video_path = segment_dir.join("qcamera.ts");
 
         let mut segment_video = if let Some(properties) = &video_properties {
-            if !seg_video_path.try_exists()? {
+            if overwrite_videos || !seg_video_path.try_exists()? {
                 let enc = SegmentVideoEncoder::new(&seg_video_path, properties, first_video)?;
                 first_video = false;
                 Some(enc)
             } else {
                 // Don't encode new a segment video if the it already exists, as this is the slowest
-                // and most CPU intensive part
+                // and most CPU intensive part (unless --overwrite was passed in)
                 eprintln!("Skipping existing {seg_video_path:?}");
                 None
             }
