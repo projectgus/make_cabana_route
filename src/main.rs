@@ -363,7 +363,7 @@ fn write_launch_script(info: &LogInfo, data_dir: &Path) -> Result<()> {
         script.write_all(b"#!/bin/sh\n")?;
         script.write_all(
             format!(
-                "cabana {} --data_dir \"$(dirname $0)\" $@ {}\n",
+                "cabana {} --data_dir \"$(realpath `dirname $0`)\" $@ {}\n",
                 vipc_arg,
                 first_segment_dir.file_name().unwrap().to_str().unwrap(),
             )
