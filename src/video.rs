@@ -8,9 +8,7 @@ use ffmpeg::{
     codec, decoder, encoder, format, frame, media, software::scaling, Dictionary, Packet, Rational,
 };
 use jpeg_encoder;
-use std::cell::RefCell;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 
 const TARGET_FPS: u32 = 20;
 
@@ -146,7 +144,6 @@ pub struct VideoProperties {
 pub struct SourceFrame {
     pub frame: frame::Video,
     pub ts_ns: i64,
-    jpeg_scaler_context: Rc<RefCell<scaling::Context>>,
 }
 
 impl SourceVideo {
@@ -184,7 +181,10 @@ impl SourceVideo {
     // Didn't have any luck implementing IntoIter for this, but this is kind of better
     // as more flexible
     pub fn video_frames(&mut self) -> Result<SourceFrameIterator<'_>> {
-        let mut filter_spec = format!("scale={}:-1", VIDEO_MAX_WIDTH);
+        let decoder = self.video_decoder()?;
+        let props = self.properties()?;
+
+        let mut filter_spec = format!("scale={}:{}", props.out_width, props.out_height);
 
         let rotate = self.display_rotation()?;
         if rotate != 0 {
@@ -192,31 +192,13 @@ impl SourceVideo {
         }
         eprintln!("Filter spec: {}", filter_spec);
 
-        let props = self.properties()?;
-        let decoder = self.video_decoder()?;
         let filter_graph = FilterGraph::new(&decoder, &filter_spec)?;
         let packets = self.ictx.packets();
-
-        // JPEG scaler context takes output of the filter graph pipeline as
-        // input. Use a simple swscaler context rather than a more complex
-        // av_filter pipeline.
-        let jpeg_scaler_context = scaling::Context::get(
-            decoder.format(),
-            props.out_width,
-            props.out_height,
-            format::Pixel::RGB24,
-            JPEG_MAX_WIDTH,
-            JPEG_MAX_WIDTH * props.out_height / props.out_width,
-            scaling::Flags::BILINEAR,
-        )
-        .expect("Failed to initialize JPEG scaler context");
-        let jpeg_scaler_context = Rc::new(RefCell::new(jpeg_scaler_context));
 
         Ok(SourceFrameIterator {
             packets,
             decoder,
             video_stream_index: self.video_stream_index,
-            jpeg_scaler_context,
             next_frame_ts: 0,
             filter_graph,
         })
@@ -239,7 +221,7 @@ impl SourceVideo {
         let out_width = if in_width > VIDEO_MAX_WIDTH {
             VIDEO_MAX_WIDTH
         } else {
-            in_height
+            in_width
         };
         let out_height = out_width * in_height / in_width;
 
@@ -259,7 +241,6 @@ pub struct SourceFrameIterator<'a> {
     packets: format::context::input::PacketIter<'a>,
     video_stream_index: usize,
     filter_graph: FilterGraph,
-    jpeg_scaler_context: Rc<RefCell<scaling::Context>>,
     next_frame_ts: i64,
 }
 
@@ -271,8 +252,6 @@ impl<'a> Iterator for SourceFrameIterator<'a> {
             let time_base = decoder.time_base().expect("Video must have time base");
             let timebase_ns =
                 (time_base.numerator() as i64 * 1_000_000_000) / time_base.denominator() as i64;
-            let jpeg_scaler_context = self.jpeg_scaler_context.clone();
-
             let mut frame = frame::Video::empty();
             for res in self.packets.by_ref() {
                 let (stream, packet) = res.expect("Failed to iterate frames");
@@ -292,11 +271,7 @@ impl<'a> Iterator for SourceFrameIterator<'a> {
                             self.filter_graph
                                 .filter_frame(&mut frame)
                                 .expect("Failed to filter frame");
-                            return Some(Self::Item {
-                                frame,
-                                ts_ns,
-                                jpeg_scaler_context,
-                            });
+                            return Some(Self::Item { frame, ts_ns });
                         }
                     }
                 }
@@ -315,7 +290,24 @@ impl<'a> Iterator for SourceFrameIterator<'a> {
 
 impl SourceFrame {
     pub fn encode_jpeg(&self) -> Vec<u8> {
-        let mut scaler = self.jpeg_scaler_context.try_borrow_mut().unwrap();
+        // JPEG scaler context takes output of the filter graph pipeline as
+        // input. Uses a simple swscaler context rather than a more complex
+        // av_filter pipeline.
+        //
+        // Making a new scaler context for each JPEG may seem wasteful, but none
+        // of this code shows up at all in performance profiling...
+        let jpeg_width = JPEG_MAX_WIDTH.min(self.frame.width());
+        let jpeg_height = jpeg_width * self.frame.height() / self.frame.width();
+        let mut scaler = scaling::Context::get(
+            self.frame.format(),
+            self.frame.width(),
+            self.frame.height(),
+            format::Pixel::RGB24,
+            jpeg_width,
+            jpeg_height,
+            scaling::Flags::BILINEAR,
+        )
+        .expect("Failed to initialize JPEG scaler context");
 
         let mut rgb_frame = frame::Video::empty();
         scaler
