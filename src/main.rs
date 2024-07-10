@@ -346,10 +346,12 @@ fn process_log(info: &LogInfo, data_dir: &Path, overwrite_videos: bool) -> Resul
 }
 
 fn write_launch_script(info: &LogInfo, data_dir: &Path) -> Result<()> {
-    /* Cabana doesn't have much of a feature for browsing local routes, so much a bunch of
-    launcher scripts based on the CSV log file name.
+    /* Cabana doesn't have much of a feature for browsing local routes, so generate a
+    launch script based on the CSV log file name.
 
-    These assume 'cabana' on the PATH, and can take extra arguments like --dbc <path_to_dbc>
+    The scripts assume 'cabana' on the PATH.
+
+    They can take extra arguments like --dbc <path_to_dbc>
     */
     let script_name = format!("{}.sh", info.logfile.file_stem().unwrap().to_str().unwrap());
     let script_path = data_dir.join(script_name);
@@ -361,9 +363,10 @@ fn write_launch_script(info: &LogInfo, data_dir: &Path) -> Result<()> {
     {
         let mut script = File::create(&script_path)?;
         script.write_all(b"#!/bin/sh\n")?;
+        script.write_all(b"SCRIPT_DIR=\"$(realpath \"$(dirname \"$0\")\")\"\n")?;
         script.write_all(
             format!(
-                "cabana {} --data_dir \"$(realpath `dirname $0`)\" $@ {}\n",
+                "cabana {} --data_dir \"$SCRIPT_DIR\" $@ {}\n",
                 vipc_arg,
                 first_segment_dir.file_name().unwrap().to_str().unwrap(),
             )
