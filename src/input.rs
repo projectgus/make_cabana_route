@@ -93,11 +93,24 @@ impl CANMessage {
             .next()
             .ok_or(anyhow!("Missing is_extended_id field"))?
             == "true";
-        let bus_no = fields.next().ok_or(anyhow!("Missing bus field"))?.parse()?;
+
+        // SavvyCAN CSV files have a field here for Rx/Tx, skip it if present
+        let maybe_tx_rx = fields.next();
+        let next = if maybe_tx_rx != Some("Tx") && maybe_tx_rx != Some("Rx") {
+            maybe_tx_rx
+        } else {
+            fields.next()
+        };
+
+        let bus_no = next
+            .ok_or(anyhow!("Missing bus field"))?
+            .parse()
+            .context("Invalid bus field")?;
         fields.next(); // dlen field, can skip this one
 
         // collect the remaining variable number of data fields d1..d8
         let data = fields
+            .take(8)
             .map(|d| u8::from_str_radix(d, 16))
             .try_collect()
             .context("Error parsing CSV data field")?;
@@ -124,6 +137,7 @@ pub fn read_can_messages(
 
     let mut rdr = csv::ReaderBuilder::new()
         .flexible(true)
+        .has_headers(true)
         .from_path(csv_log_path)
         .with_context(|| format!("Failed to read CSV file {:?}", csv_log_path))?;
 
@@ -139,9 +153,18 @@ pub fn read_can_messages(
         _ => 0,
     });
 
+    eprintln!("can_ts_offs {}", can_ts_offs);
+
     let mut result = records
-        .map(|rec| match rec {
-            Ok(r) => CANMessage::parse_from(&r, can_ts_offs),
+        .enumerate()
+        .map(|(row, rec)| match rec {
+            Ok(r) => CANMessage::parse_from(&r, can_ts_offs).with_context(|| {
+                format!(
+                    "Invalid CAN data found in CSV {:?} row {}",
+                    csv_log_path,
+                    row + 1
+                )
+            }),
             Err(e) => Err(anyhow!(
                 "Invalid CSV record in file {:?}: {}",
                 csv_log_path,
