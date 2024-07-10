@@ -209,6 +209,8 @@ fn process_log(info: &LogInfo, data_dir: &Path, overwrite_videos: bool) -> Resul
     eprintln!("Loading CAN messages {0:?}...", info.logfile);
     let can_inputs = read_can_messages(&info.logfile, can_ts_offs)?;
 
+    eprintln!("read {} can inputs", can_inputs.len());
+
     let alerts_vec = find_missing_can_messages(&can_inputs);
     let alerts = expand_alerts(alerts_vec).into_iter();
 
@@ -244,6 +246,8 @@ fn process_log(info: &LogInfo, data_dir: &Path, overwrite_videos: bool) -> Resul
     // Sort the inputs and group them into segments
     let segments = inputs.group_by(|input| input.timestamp() / SEGMENT_NANOS);
     let mut first_video = true;
+
+    let mut total_can = 0usize;
 
     for (segment_idx, inputs) in &segments {
         let mut inputs = inputs.peekable();
@@ -293,6 +297,14 @@ fn process_log(info: &LogInfo, data_dir: &Path, overwrite_videos: bool) -> Resul
             // in qlog whenever CAN_EVENT_LEN time has passed
             if !can_msgs.is_empty() && input.timestamp() - can_msgs[0].timestamp() > CAN_EVENT_TIME
             {
+                // eprintln!(
+                //     "segment {} write_can {} msgs timestamps {} to {}",
+                //     segment_idx,
+                //     can_msgs.len(),
+                //     can_msgs[0].timestamp(),
+                //     can_msgs.last().unwrap().timestamp(),
+                // );
+                total_can += can_msgs.len();
                 qlog.write_can(&can_msgs);
                 can_msgs.clear();
             }
@@ -325,6 +337,7 @@ fn process_log(info: &LogInfo, data_dir: &Path, overwrite_videos: bool) -> Resul
 
         // Flush any final batch of CAN messages
         qlog.write_can(&can_msgs);
+        total_can += can_msgs.len();
 
         if let Some(encode) = segment_video {
             encode.finish()?;
@@ -339,6 +352,8 @@ fn process_log(info: &LogInfo, data_dir: &Path, overwrite_videos: bool) -> Resul
 
         qlog.write_sentinel(0, SentinelType::EndOfSegment);
     }
+
+    eprintln!("total can messages {}", total_can);
 
     write_launch_script(info, data_dir)?;
 
