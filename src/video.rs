@@ -340,8 +340,8 @@ impl PartialEq for SourceFrame {
 impl Eq for SourceFrame {}
 
 impl FilterGraph {
-    const IN: &str = "in";
-    const OUT: &str = "out";
+    const IN: &'static str = "in";
+    const OUT: &'static str = "out";
 
     fn new(decoder: &decoder::Video, filter_spec: &str) -> Result<Self> {
         let buffer_src = filter::find("buffer").context("can't find src")?;
