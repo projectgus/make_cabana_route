@@ -352,7 +352,11 @@ impl FilterGraph {
         let mut graph = filter::graph::Graph::new();
 
         let time_base = decoder.time_base().unwrap();
-        let pixel_aspect = decoder.aspect_ratio();
+        let mut pixel_aspect = decoder.aspect_ratio();
+        if pixel_aspect.numerator() == 0 {
+            // For some reason, ffmpeg sometimes returns 0/0 here
+            pixel_aspect = Rational::new(1, 1);
+        }
 
         let src_args = format!(
             "video_size={}x{}:pix_fmt={}:time_base={}/{}:pixel_aspect={}/{}",
