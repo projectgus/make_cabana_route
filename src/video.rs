@@ -270,6 +270,7 @@ impl<'a> Iterator for SourceFrameIterator<'a> {
                             } else {
                                 self.next_frame_ts + TARGET_FRAME_NS
                             };
+                            frame.set_kind(ffmpeg::picture::Type::None);
                             self.filter_graph
                                 .filter_frame(&mut frame)
                                 .expect("Failed to filter frame");
