@@ -59,6 +59,8 @@ impl SegmentVideoEncoder {
         // to be set
         if let Some(time_base) = properties.time_base {
             video.set_time_base(Some(time_base.invert()));
+        } else {
+            video.set_time_base(Some(Rational::new(30000, 1)));
         }
         video.set_flags(codec::Flags::GLOBAL_HEADER);
 
