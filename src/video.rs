@@ -67,8 +67,8 @@ impl SegmentVideoEncoder {
         eprintln!("Writing segment video to {}...", path.display());
 
         let mut x265_opts = Dictionary::new();
-        x265_opts.set("preset", "fast"); // default is medium. TODO: make configurable?
-        x265_opts.set("crf", "40"); // default is 28. lower == higher quality, bigger files.
+        x265_opts.set("preset", "medium"); // default is medium. TODO: make configurable?
+        x265_opts.set("crf", "28"); // default is 28. lower == higher quality, bigger files.
         let encoder = video
             .open_with(x265_opts)
             .expect("error opening HEVC encoder");
