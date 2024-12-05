@@ -68,7 +68,12 @@ impl SegmentVideoEncoder {
 
         let mut x265_opts = Dictionary::new();
         x265_opts.set("preset", "medium"); // default is medium. TODO: make configurable?
-        x265_opts.set("x265-params", "keyint=30"); // matches cabana demo video keyframe rate, better seeking
+
+        // Disabling b-frames and setting keyframe interval to 30
+        // frames produces videos with the same properties as comma.ai's camera
+        // videos: one packet per frame and keyframes every 1.5 seconds. One
+        // packet per frame is necessary for openpilot compatibility.
+        x265_opts.set("x265-params", "keyint=30:bframes=0");
         let encoder = video
             .open_with(x265_opts)
             .expect("error opening HEVC encoder");
