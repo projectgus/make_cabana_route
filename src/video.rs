@@ -225,15 +225,28 @@ impl SourceVideo {
             in_width
         };
         let out_height = out_width * in_height / in_width;
+        let format = fix_deprecated_pixel_format(decoder.format());
 
         Ok(VideoProperties {
             out_width,
             out_height,
-            format: decoder.format(),
+            format,
             time_base: decoder.time_base(),
             color_space: decoder.color_space(),
             color_range: decoder.color_range(),
         })
+    }
+}
+
+// YUVJnnn formats are "deprecated in favour of YUVnnn and setting color_range",
+// so do that to reduce warnings. Note color_range has to be set when using these.
+fn fix_deprecated_pixel_format(format: Pixel) -> Pixel {
+    match format {
+        Pixel::YUVJ411P => Pixel::YUV411P,
+        Pixel::YUVJ420P => Pixel::YUV420P,
+        Pixel::YUVJ422P => Pixel::YUV422P,
+        Pixel::YUVJ444P => Pixel::YUV444P,
+        _ => format,
     }
 }
 
@@ -273,6 +286,7 @@ impl<'a> Iterator for SourceFrameIterator<'a> {
                             self.filter_graph
                                 .filter_frame(&mut frame)
                                 .expect("Failed to filter frame");
+                            frame.set_format(fix_deprecated_pixel_format(frame.format()));
                             return Some(Self::Item { frame, ts_ns });
                         }
                     }
