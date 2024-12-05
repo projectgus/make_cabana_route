@@ -42,7 +42,7 @@ impl SegmentVideoEncoder {
         let mut ost = octx.add_stream()?;
         let video_stream_index = ost.index();
 
-        let codec = encoder::find(codec::Id::HEVC).context("Failed to find HEV codec")?;
+        let codec = encoder::find(codec::Id::HEVC).context("Failed to find HEVC codec")?;
         let mut video = codec::Encoder::new(codec)
             .context("Failed to instantiate HEVC Codec")?
             .video()
@@ -68,7 +68,7 @@ impl SegmentVideoEncoder {
 
         let mut x265_opts = Dictionary::new();
         x265_opts.set("preset", "medium"); // default is medium. TODO: make configurable?
-        x265_opts.set("crf", "28"); // default is 28. lower == higher quality, bigger files.
+        x265_opts.set("x265-params", "keyint=30"); // matches cabana demo video keyframe rate, better seeking
         let encoder = video
             .open_with(x265_opts)
             .expect("error opening HEVC encoder");
@@ -103,8 +103,7 @@ impl SegmentVideoEncoder {
         while self.encoder.receive_packet(&mut encoded).is_ok() {
             self.pkt_count += 1;
             encoded.set_stream(self.video_stream_index);
-            encoded
-                .write_interleaved(&mut self.octx)
+            encoded.write(&mut self.octx)
                 .context("failed to write to encoder")?;
         }
 
