@@ -11,7 +11,9 @@ capnp = "0.16.1"
 chrono = { version = "0.4.24", features = ["serde"] }
 clap = { version = "4.3.19", features = ["derive"] }
 csv = "1.2.1"
-ffmpeg = { git = "https://github.com/meh/rust-ffmpeg.git", branch = "master", version = "0.6.0" }
+ffmpeg = { git = "https://github.com/meh/rust-ffmpeg.git", rev = "75d68c8" }
+# note: depending on your system it may be possible to comment this line and link to prebuilt ffmpeg
+ffmpeg-sys = { git = "https://github.com/meh/rust-ffmpeg.git", rev = "75d68c8", features = ["build", "build-license-gpl", "build-license-nonfree", "build-license-version3", "build-pic", "build-lib-x265", "build-lib-x264"] }
 itertools = "0.10.5"
 jpeg-encoder = { version = "0.5.1", features = ["simd"] }
 serde = { version = "1.0.160", features = ["derive", "alloc"] }
@@ -22,3 +24,8 @@ capnpc = "0.16"
 
 [profile.release]
 debug = true
+
+# Branch with fix for building ffmpeg with libx265
+[patch.'https://github.com/meh/rust-ffmpeg.git']
+ffmpeg = { git = "https://github.com/projectgus/rust-ffmpeg.git", branch = "bugfix/sys_link_libx264_5" }
+ffmpeg-sys = { git = "https://github.com/projectgus/rust-ffmpeg.git", branch = "bugfix/sys_link_libx264_5" }
